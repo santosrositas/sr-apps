@@ -1,140 +1,228 @@
 /**
- * Computer Vision, Convex Quad Validator, QR Scanner & 3D Homography Engine.
+ * High-Precision Optical Monitor/Screen Detector & Long-Range QR Beacon Scanner.
+ * - Stage 1: Connected-Component Labeling (CCL) on adaptive luminous regions,
+ *   scored by rectangular fill ratio, monitor aspect ratio, bezel contrast, and center proximity.
+ * - Stage 2: Native BarcodeDetector + ROI-zoomed high-res jsQR fallback (works from 2-3m+ on iOS & Android).
  */
 (function (root) {
-  function solveLinearSystem(A, b) {
-    const n = b.length;
-    const M = A.map((row, i) => [...row, b[i]]);
-    for (let col = 0; col < n; col++) {
-      let maxRow = col;
-      for (let r = col + 1; r < n; r++) {
-        if (Math.abs(M[r][col]) > Math.abs(M[maxRow][col])) maxRow = r;
-      }
-      if (Math.abs(M[maxRow][col]) < 1e-10) return null;
-      const tmp = M[col];
-      M[col] = M[maxRow];
-      M[maxRow] = tmp;
-
-      const pivot = M[col][col];
-      for (let j = col; j <= n; j++) M[col][j] /= pivot;
-
-      for (let r = 0; r < n; r++) {
-        if (r === col) continue;
-        const factor = M[r][col];
-        for (let j = col; j <= n; j++) M[r][j] -= factor * M[col][j];
-      }
-    }
-    return M.map((row) => row[n]);
-  }
-
   /**
-   * Checks that 4 points [TL, TR, BR, BL] form a valid convex clockwise quadrilateral
-   * with sufficient area so matrix3d never collapses or inverts.
+   * Detects lit monitors, TVs, laptops, or tablet screens in a video frame using
+   * connected-component labeling + rectangularity + bezel contrast scoring.
+   * Returns normalized coordinates in [0..1] relative to the video frame.
    */
-  function isValidConvexQuad(pts, minArea = 0.02) {
-    if (!pts || pts.length !== 4) return false;
-    let area2 = 0;
-    for (let i = 0; i < 4; i++) {
-      const a = pts[i];
-      const b = pts[(i + 1) % 4];
-      const c = pts[(i + 2) % 4];
-      const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
-      if (cross <= 1e-5) return false; // Must be strictly clockwise in screen coords (Y down)
-      area2 += a.x * b.y - b.x * a.y;
+  function detectMonitors(videoEl, scratchCanvas, focusPoint) {
+    if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) {
+      return { best: null, candidates: [] };
     }
-    return Math.abs(area2) * 0.5 >= minArea;
-  }
 
-  function computeHomographyMatrix3d(width, height, dstPoints) {
-    if (!isValidConvexQuad(dstPoints, 200)) return null;
-    const src = [
-      [0, 0],
-      [width, 0],
-      [width, height],
-      [0, height],
-    ];
-    const A = [];
-    const b = [];
-    for (let i = 0; i < 4; i++) {
-      const [sx, sy] = src[i];
-      const [dx, dy] = [dstPoints[i].x, dstPoints[i].y];
-      A.push([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy]);
-      b.push(dx);
-      A.push([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy]);
-      b.push(dy);
-    }
-    const h = solveLinearSystem(A, b);
-    if (!h || h.some((v) => !isFinite(v))) return null;
-    const m = [
-      h[0], h[3], 0, h[6],
-      h[1], h[4], 0, h[7],
-      0,    0,    1, 0,
-      h[2], h[5], 0, 1,
-    ];
-    return `matrix3d(${m.map((v) => (Math.abs(v) < 1e-14 ? 0 : Number(v.toPrecision(12)))).join(',')})`;
-  }
-
-  function detectScreenQuad(videoEl, scratchCanvas) {
-    if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return null;
     const W = 160;
     const H = Math.max(90, Math.round((videoEl.videoHeight / videoEl.videoWidth) * W));
     if (scratchCanvas.width !== W || scratchCanvas.height !== H) {
       scratchCanvas.width = W;
       scratchCanvas.height = H;
     }
+
     const ctx = scratchCanvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(videoEl, 0, 0, W, H);
     const { data } = ctx.getImageData(0, 0, W, H);
 
-    const lum = new Float32Array(W * H);
+    const N = W * H;
+    const lum = new Uint8Array(N);
+    const hist = new Uint32Array(256);
     let sum = 0;
-    let maxL = 0;
+
     for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-      const l = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      const l = (77 * data[i] + 150 * data[i + 1] + 29 * data[i + 2]) >> 8;
       lum[p] = l;
+      hist[l]++;
       sum += l;
-      if (l > maxL) maxL = l;
     }
-    const mean = sum / (W * H);
-    const threshold = Math.max(mean + (maxL - mean) * 0.48, 125);
 
-    const mx = Math.floor(W * 0.06);
-    const my = Math.floor(H * 0.06);
-    let count = 0;
-    let minSum = Infinity, maxSum = -Infinity;
-    let minDiff = Infinity, maxDiff = -Infinity;
-    let tl = null, br = null, tr = null, bl = null;
+    const mean = sum / N;
+    // Compute 78th percentile luminance for adaptive threshold across dark/bright rooms
+    let acc = 0;
+    let p78 = 140;
+    const target78 = N * 0.78;
+    for (let v = 0; v < 256; v++) {
+      acc += hist[v];
+      if (acc >= target78) {
+        p78 = v;
+        break;
+      }
+    }
+    const threshold = Math.max(85, Math.min(220, Math.round(Math.max(p78, mean + 26))));
 
-    for (let y = my; y < H - my; y++) {
-      for (let x = mx; x < W - mx; x++) {
-        const idx = y * W + x;
-        if (lum[idx] < threshold) continue;
-        count++;
-        const s = x + y;
-        const d = x - y;
-        if (s < minSum) { minSum = s; tl = { x, y }; }
-        if (s > maxSum) { maxSum = s; br = { x, y }; }
-        if (d > maxDiff) { maxDiff = d; tr = { x, y }; }
-        if (d < minDiff) { minDiff = d; bl = { x, y }; }
+    // Binary mask of bright screen-like pixels
+    const mask = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      if (lum[i] >= threshold) mask[i] = 1;
+    }
+
+    // BFS Connected Component Labeling (4-connected, fast & zero recursion overflow)
+    const visited = new Uint8Array(N);
+    const queue = new Int32Array(N);
+    const candidates = [];
+
+    const fx = focusPoint ? focusPoint.x : 0.5;
+    const fy = focusPoint ? focusPoint.y : 0.45;
+
+    for (let y = 2; y < H - 2; y++) {
+      for (let x = 2; x < W - 2; x++) {
+        const start = y * W + x;
+        if (!mask[start] || visited[start]) continue;
+
+        let head = 0;
+        let tail = 0;
+        queue[tail++] = start;
+        visited[start] = 1;
+
+        let count = 0;
+        let minX = x, maxX = x, minY = y, maxY = y;
+        let minSum = x + y, maxSum = x + y;
+        let minDiff = x - y, maxDiff = x - y;
+        let tlX = x, tlY = y, brX = x, brY = y, trX = x, trY = y, blX = x, blY = y;
+        let lumSum = 0;
+
+        while (head < tail) {
+          const idx = queue[head++];
+          const cy = (idx / W) | 0;
+          const cx = idx - cy * W;
+
+          count++;
+          lumSum += lum[idx];
+          if (cx < minX) minX = cx;
+          if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy;
+          if (cy > maxY) maxY = cy;
+
+          const s = cx + cy;
+          const d = cx - cy;
+          if (s < minSum) { minSum = s; tlX = cx; tlY = cy; }
+          if (s > maxSum) { maxSum = s; brX = cx; brY = cy; }
+          if (d > maxDiff) { maxDiff = d; trX = cx; trY = cy; }
+          if (d < minDiff) { minDiff = d; blX = cx; blY = cy; }
+
+          // 4 neighbors
+          if (cx > 1) {
+            const n = idx - 1;
+            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
+          }
+          if (cx < W - 2) {
+            const n = idx + 1;
+            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
+          }
+          if (cy > 1) {
+            const n = idx - W;
+            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
+          }
+          if (cy < H - 2) {
+            const n = idx + W;
+            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
+          }
+        }
+
+        const bw = maxX - minX + 1;
+        const bh = maxY - minY + 1;
+        const bboxArea = bw * bh;
+        const areaRatio = bboxArea / N;
+
+        // Filter out tiny glare spots and full-frame bright walls
+        if (areaRatio < 0.025 || areaRatio > 0.86) continue;
+        if (bw < 18 || bh < 12) continue;
+
+        const fillRatio = count / bboxArea;
+        if (fillRatio < 0.44) continue; // Reject non-rectangular shapes
+
+        const aspect = bw / bh;
+        if (aspect < 0.42 || aspect > 2.85) continue;
+
+        // Measure bezel contrast (outer ring 3px outside bbox should be darker than screen interior)
+        const innerAvg = lumSum / count;
+        let borderSum = 0;
+        let borderCnt = 0;
+        const pad = 3;
+        const bx0 = Math.max(0, minX - pad);
+        const bx1 = Math.min(W - 1, maxX + pad);
+        const by0 = Math.max(0, minY - pad);
+        const by1 = Math.min(H - 1, maxY + pad);
+
+        for (let sx = bx0; sx <= bx1; sx += 2) {
+          borderSum += lum[by0 * W + sx] + lum[by1 * W + sx];
+          borderCnt += 2;
+        }
+        for (let sy = by0; sy <= by1; sy += 2) {
+          borderSum += lum[sy * W + bx0] + lum[sy * W + bx1];
+          borderCnt += 2;
+        }
+        const borderAvg = borderCnt > 0 ? borderSum / borderCnt : mean;
+        const contrast = Math.max(0, (innerAvg - borderAvg) / 255);
+        if (contrast < 0.09) continue; // Reject flat walls without bezel drop-off
+
+        // Score candidate: favor rectangularity, bezel contrast, good size, and proximity to focus/center
+        const cxNorm = (minX + maxX) / (2 * W);
+        const cyNorm = (minY + maxY) / (2 * H);
+        const dist = Math.hypot(cxNorm - fx, cyNorm - fy);
+        const centerBonus = Math.max(0, 1 - dist * 1.4);
+        const aspectBonus = (aspect >= 1.15 && aspect <= 2.15) ? 0.22 : 0.08;
+        const sizeBonus = Math.min(0.3, areaRatio * 1.2);
+        const score = fillRatio * 0.35 + contrast * 0.45 + centerBonus * 0.28 + aspectBonus + sizeBonus;
+
+        // Blend axis-aligned bbox with extreme corners slightly for clean perspective silhouette
+        const quad = [
+          { x: (tlX * 0.65 + minX * 0.35) / W, y: (tlY * 0.65 + minY * 0.35) / H },
+          { x: (trX * 0.65 + maxX * 0.35) / W, y: (trY * 0.65 + minY * 0.35) / H },
+          { x: (brX * 0.65 + maxX * 0.35) / W, y: (brY * 0.65 + maxY * 0.35) / H },
+          { x: (blX * 0.65 + minX * 0.35) / W, y: (blY * 0.65 + maxY * 0.35) / H },
+        ];
+
+        candidates.push({
+          bbox: { x: minX / W, y: minY / H, w: bw / W, h: bh / H },
+          quad,
+          aspect,
+          fillRatio,
+          contrast,
+          confidence: Math.min(0.99, Math.max(0.55, score)),
+          score,
+        });
       }
     }
 
-    const areaRatio = count / (W * H);
-    if (!tl || !tr || !br || !bl || areaRatio < 0.04 || areaRatio > 0.78) {
-      return { found: false, quad: null };
-    }
+    candidates.sort((a, b) => b.score - a.score);
+    return { best: candidates[0] || null, candidates: candidates.slice(0, 3) };
+  }
 
-    const quad = [
-      { x: tl.x / W, y: tl.y / H },
-      { x: tr.x / W, y: tr.y / H },
-      { x: br.x / W, y: br.y / H },
-      { x: bl.x / W, y: bl.y / H },
-    ];
+  function smoothQuad(prev, next, alpha = 0.28) {
+    if (!prev) return next.map((p) => ({ x: p.x, y: p.y }));
+    return prev.map((p, i) => ({
+      x: p.x + (next[i].x - p.x) * alpha,
+      y: p.y + (next[i].y - p.y) * alpha,
+    }));
+  }
 
-    if (!isValidConvexQuad(quad, 0.04)) {
-      return { found: false, quad: null };
-    }
-    return { found: true, quad };
+  /**
+   * Maps video-normalized coordinates [0..1] to screen/canvas pixel coordinates
+   * accounting for CSS `object-fit: cover` cropping so the HUD box hugs the real monitor accurately!
+   */
+  function mapVideoNormToCanvas(normPt, videoEl, canvasW, canvasH) {
+    const vw = videoEl.videoWidth || canvasW;
+    const vh = videoEl.videoHeight || canvasH;
+    const scale = Math.max(canvasW / vw, canvasH / vh);
+    const drawnW = vw * scale;
+    const drawnH = vh * scale;
+    const offX = (canvasW - drawnW) * 0.5;
+    const offY = (canvasH - drawnH) * 0.5;
+    return {
+      x: offX + normPt.x * drawnW,
+      y: offY + normPt.y * drawnH,
+    };
+  }
+
+  function parseStarkQrPayload(raw) {
+    if (!raw) return null;
+    const txt = String(raw).trim().toUpperCase();
+    if (txt.startsWith('SB:')) return txt.slice(3).replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    if (txt.startsWith('STARK:')) return txt.slice(6).replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    return null;
   }
 
   let nativeDetector = null;
@@ -144,42 +232,90 @@
     } catch (_) {}
   }
 
-  async function scanQrCode(videoEl, qrCanvas) {
+  /**
+   * High-range QR Beacon scanner.
+   * Uses native BarcodeDetector first, then high-resolution ROI-cropped jsQR
+   * (zooming directly into the detected monitor bbox so QR codes are readable from 2-3m+).
+   */
+  async function scanQrBeacon(videoEl, qrCanvas, roiBbox) {
     if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return null;
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
 
+    // 1. Native BarcodeDetector (full video resolution, hardware accelerated)
     if (nativeDetector) {
       try {
         const codes = await nativeDetector.detect(videoEl);
         for (const c of codes) {
-          if (c.rawValue && c.rawValue.startsWith('STARK:')) {
-            return c.rawValue.slice(6).trim().toUpperCase();
+          const parsed = parseStarkQrPayload(c.rawValue);
+          if (parsed) {
+            const quad = (c.cornerPoints && c.cornerPoints.length === 4)
+              ? c.cornerPoints.map((pt) => ({ x: pt.x / vw, y: pt.y / vh }))
+              : null;
+            return { code: parsed, quad };
           }
         }
       } catch (_) {}
     }
 
+    // 2. ROI-zoomed high-res jsQR (works on iPhone Safari + all browsers!)
     if (typeof window !== 'undefined' && typeof window.jsQR === 'function') {
-      const W = 320;
-      const H = Math.max(180, Math.round((videoEl.videoHeight / videoEl.videoWidth) * W));
-      if (qrCanvas.width !== W || qrCanvas.height !== H) {
-        qrCanvas.width = W;
-        qrCanvas.height = H;
+      // Crop around detected monitor ROI (with 12% margin) or center 72% of frame
+      let sx = 0, sy = 0, sw = vw, sh = vh;
+      if (roiBbox) {
+        const padX = roiBbox.w * 0.14;
+        const padY = roiBbox.h * 0.14;
+        sx = Math.max(0, Math.floor((roiBbox.x - padX) * vw));
+        sy = Math.max(0, Math.floor((roiBbox.y - padY) * vh));
+        sw = Math.min(vw - sx, Math.ceil((roiBbox.w + padX * 2) * vw));
+        sh = Math.min(vh - sy, Math.ceil((roiBbox.h + padY * 2) * vh));
+      } else {
+        sx = Math.floor(vw * 0.12);
+        sy = Math.floor(vh * 0.12);
+        sw = Math.floor(vw * 0.76);
+        sh = Math.floor(vh * 0.76);
       }
+
+      const targetW = Math.min(640, sw);
+      const targetH = Math.max(120, Math.round((sh / sw) * targetW));
+      if (qrCanvas.width !== targetW || qrCanvas.height !== targetH) {
+        qrCanvas.width = targetW;
+        qrCanvas.height = targetH;
+      }
+
       const ctx = qrCanvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(videoEl, 0, 0, W, H);
-      const imgData = ctx.getImageData(0, 0, W, H);
-      const code = window.jsQR(imgData.data, W, H, { inversionAttempts: 'dontInvert' });
-      if (code && code.data && code.data.startsWith('STARK:')) {
-        return code.data.slice(6).trim().toUpperCase();
+      ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, targetW, targetH);
+      const imgData = ctx.getImageData(0, 0, targetW, targetH);
+      const hit = window.jsQR(imgData.data, targetW, targetH, { inversionAttempts: 'attemptBoth' });
+      if (hit) {
+        const parsed = parseStarkQrPayload(hit.data);
+        if (parsed) {
+          const loc = hit.location;
+          const mapPt = (pt) => ({
+            x: (sx + (pt.x / targetW) * sw) / vw,
+            y: (sy + (pt.y / targetH) * sh) / vh,
+          });
+          return {
+            code: parsed,
+            quad: [
+              mapPt(loc.topLeftCorner),
+              mapPt(loc.topRightCorner),
+              mapPt(loc.bottomRightCorner),
+              mapPt(loc.bottomLeftCorner),
+            ],
+          };
+        }
       }
     }
+
     return null;
   }
 
   root.StarkVision = {
-    computeHomographyMatrix3d,
-    isValidConvexQuad,
-    detectScreenQuad,
-    scanQrCode,
+    detectMonitors,
+    smoothQuad,
+    mapVideoNormToCanvas,
+    scanQrBeacon,
+    parseStarkQrPayload,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

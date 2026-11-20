@@ -1,13 +1,12 @@
 (function () {
-  // ===== DOM ELEMENTS =====
+  // ===== DOM =====
   const connDot = document.getElementById('connDot');
-  const tabArBtn = document.getElementById('tabArBtn');
-  const tabSendBtn = document.getElementById('tabSendBtn');
+  const tabScanBtn = document.getElementById('tabScanBtn');
   const tabRxBtn = document.getElementById('tabRxBtn');
   const flipCamBtn = document.getElementById('flipCamBtn');
   const toastEl = document.getElementById('toast');
 
-  // Scanner / AR View
+  // Scanner View
   const scannerView = document.getElementById('scannerView');
   const cameraVideo = document.getElementById('cameraVideo');
   const cameraOverlayPrompt = document.getElementById('cameraOverlayPrompt');
@@ -16,10 +15,11 @@
   const hudCanvas = document.getElementById('hudCanvas');
   const hudCtx = hudCanvas.getContext('2d');
 
-  const p2pBar = document.getElementById('p2pBar');
   const codeInput = document.getElementById('codeInput');
   const connectCodeBtn = document.getElementById('connectCodeBtn');
   const copyRxLinkBtn = document.getElementById('copyRxLinkBtn');
+  const radarStatus = document.getElementById('radarStatus');
+  const radarStatusText = document.getElementById('radarStatusText');
 
   const pickFileBtn = document.getElementById('pickFileBtn');
   const loadDemoBtn = document.getElementById('loadDemoBtn');
@@ -29,10 +29,7 @@
   const fileHintEl = document.getElementById('fileHint');
   const progressWrap = document.getElementById('progressWrap');
   const progressBar = document.getElementById('progressBar');
-
   const beamBtn = document.getElementById('beamBtn');
-  const autoFitBtn = document.getElementById('autoFitBtn');
-  const togglePinsBtn = document.getElementById('togglePinsBtn');
   const restoreBtn = document.getElementById('restoreBtn');
 
   const remoteBar = document.getElementById('remoteBar');
@@ -43,17 +40,7 @@
   const volSlider = document.getElementById('volSlider');
   const muteBtn = document.getElementById('muteBtn');
 
-  // AR Stage
-  const arStage = document.getElementById('arStage');
-  const arPlane = document.getElementById('arPlane');
-  const arImg = document.getElementById('arImg');
-  const arVideo = document.getElementById('arVideo');
-  const arAudioOverlay = document.getElementById('arAudioOverlay');
-  const arAudioName = document.getElementById('arAudioName');
-  const arAudioEl = document.getElementById('arAudioEl');
-  const arHandles = Array.from(document.querySelectorAll('.ar-handle'));
-
-  // Integrated Receiver View
+  // Receiver View
   const receiverView = document.getElementById('receiverView');
   const rxStandby = document.getElementById('rxStandby');
   const rxQrBox = document.getElementById('rxQrBox');
@@ -76,32 +63,31 @@
   const rxOverrideSub = document.getElementById('rxOverrideSub');
   const rxExitMediaBtn = document.getElementById('rxExitMediaBtn');
 
-  // ===== APP STATE =====
-  let activeTab = 'ar'; // 'ar' | 'send' | 'rx'
+  // ===== STATE =====
+  let activeTab = 'scan'; // 'scan' | 'rx'
   let facingMode = 'environment';
   let camStream = null;
   let selectedFile = null;
-  let selectedObjectUrl = null;
 
-  // AR state
-  let arActive = false;
-  let arPinsVisible = true;
-  let arCorners = [
-    { x: 0.12, y: 0.22 },
-    { x: 0.88, y: 0.22 },
-    { x: 0.88, y: 0.58 },
-    { x: 0.12, y: 0.58 },
-  ];
-  let dragIdx = -1;
+  // Optical detection state
   const scratchCanvas = document.createElement('canvas');
   const qrCanvas = document.createElement('canvas');
+  let focusPoint = { x: 0.5, y: 0.45 };
+  let smoothPrimaryQuad = null;
+  let primaryMonitor = null;
+  let secondaryMonitors = [];
+  let missFrames = 0;
+  let wasMonitorLocked = false;
+  let detectedQrQuad = null;
+  let detectedQrTime = 0;
 
   // Sender P2P state
   let senderPeer = null;
   let senderConn = null;
   let connectedCode = null;
+  let connectingCode = null;
   let qrScanBusy = false;
-  let lastQrAt = 0;
+  let lastQrAttemptAt = 0;
 
   // Receiver P2P state
   let rxPeer = null;
@@ -129,7 +115,33 @@
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
 
-  // ===== CAMERA CONTROL =====
+  function updateRadarPill() {
+    if (connectedCode) {
+      radarStatus.className = 'hud-mono connected';
+      radarStatus.querySelector('.status-dot').className = 'status-dot online';
+      radarStatusText.textContent = `ENLAZADO CON PANTALLA ${connectedCode} — LISTO`;
+      return;
+    }
+    if (connectingCode) {
+      radarStatus.className = 'hud-mono locked';
+      radarStatus.querySelector('.status-dot').className = 'status-dot locked';
+      radarStatusText.textContent = `CONECTANDO CON PANTALLA ${connectingCode}...`;
+      return;
+    }
+    if (primaryMonitor) {
+      const pct = Math.round(primaryMonitor.confidence * 100);
+      const ratioLabel = primaryMonitor.aspect > 1.5 ? '16:9' : primaryMonitor.aspect > 1.15 ? '4:3' : 'VERTICAL';
+      radarStatus.className = 'hud-mono locked';
+      radarStatus.querySelector('.status-dot').className = 'status-dot locked';
+      radarStatusText.textContent = `MONITOR DETECTADO [${ratioLabel} · ${pct}%] — LEYENDO QR...`;
+      return;
+    }
+    radarStatus.className = 'hud-mono';
+    radarStatus.querySelector('.status-dot').className = 'status-dot';
+    radarStatusText.textContent = 'APUNTA A UN MONITOR O TV...';
+  }
+
+  // ===== CAMERA =====
   function stopCamera() {
     if (camStream) {
       camStream.getTracks().forEach((t) => t.stop());
@@ -148,14 +160,18 @@
     }
     try {
       camStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       });
     } catch (_) {
       try {
         camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       } catch (err2) {
-        camErrorText.textContent = 'No se pudo abrir la cámara (' + (err2.name || 'permiso denegado') + '). Toca para reintentar.';
+        camErrorText.textContent = 'No se pudo abrir la cámara (' + (err2.name || 'permiso denegado') + ').';
         cameraOverlayPrompt.classList.add('show');
         return;
       }
@@ -166,7 +182,7 @@
     try {
       await cameraVideo.play();
     } catch (_) {
-      camErrorText.textContent = 'Toca el botón para iniciar la vista de cámara.';
+      camErrorText.textContent = 'Toca el botón para iniciar la cámara trasera.';
       cameraOverlayPrompt.classList.add('show');
     }
   }
@@ -174,14 +190,23 @@
   startCamBtn.addEventListener('click', startCamera);
   flipCamBtn.addEventListener('click', () => {
     facingMode = facingMode === 'environment' ? 'user' : 'environment';
-    if (activeTab !== 'rx') startCamera();
+    if (activeTab === 'scan') startCamera();
   });
 
-  // ===== TAB SWITCHING (AR CAM / ENVIAR TV / RECIBIR TV) =====
+  // Tap on viewfinder to prioritize a specific monitor when multiple are visible
+  hudCanvas.addEventListener('pointerdown', (e) => {
+    const rect = hudCanvas.getBoundingClientRect();
+    focusPoint = {
+      x: Math.max(0.1, Math.min(0.9, (e.clientX - rect.left) / rect.width)),
+      y: Math.max(0.15, Math.min(0.85, (e.clientY - rect.top) / rect.height)),
+    };
+    if (window.StarkAudio) window.StarkAudio.playLock();
+  });
+
+  // ===== TAB SWITCH (ESCÁNER / RECEPTOR TV) =====
   function switchTab(next) {
     activeTab = next;
-    tabArBtn.className = 'mode-btn' + (next === 'ar' ? ' active' : '');
-    tabSendBtn.className = 'mode-btn' + (next === 'send' ? ' active' : '');
+    tabScanBtn.className = 'mode-btn' + (next === 'scan' ? ' active' : '');
     tabRxBtn.className = 'mode-btn' + (next === 'rx' ? ' active-amber' : '');
 
     const isRx = next === 'rx';
@@ -191,35 +216,19 @@
 
     if (isRx) {
       stopCamera();
-      stopArProjection();
       initReceiverPeer();
       connDot.className = 'status-dot online';
-      return;
-    }
-
-    p2pBar.classList.toggle('show', next === 'send');
-    autoFitBtn.style.display = next === 'ar' ? 'inline-flex' : 'none';
-    togglePinsBtn.style.display = next === 'ar' ? 'inline-flex' : 'none';
-
-    if (next === 'send') {
-      stopArProjection();
-      beamBtn.textContent = '▲ ENVIAR A TV';
-      connDot.className = connectedCode ? 'status-dot online' : 'status-dot';
-      showToast('APUNTA AL QR DE LA OTRA PANTALLA O INGRESA EL CÓDIGO');
     } else {
-      remoteBar.classList.remove('show');
-      beamBtn.textContent = '▲ PROYECTAR AR';
-      connDot.className = 'status-dot locked';
+      connDot.className = connectedCode ? 'status-dot online' : 'status-dot';
+      if (!camStream) startCamera();
+      updateRadarPill();
     }
-
-    if (!camStream) startCamera();
   }
 
-  tabArBtn.addEventListener('click', () => switchTab('ar'));
-  tabSendBtn.addEventListener('click', () => switchTab('send'));
+  tabScanBtn.addEventListener('click', () => switchTab('scan'));
   tabRxBtn.addEventListener('click', () => switchTab('rx'));
 
-  // ===== FILE PICKER & BUILT-IN DEMO =====
+  // ===== FILE PICKER + DEMO =====
   pickFileBtn.addEventListener('click', () => {
     fileInput.value = '';
     fileInput.click();
@@ -227,13 +236,10 @@
 
   function setSelectedFile(file) {
     selectedFile = file;
-    if (selectedObjectUrl) URL.revokeObjectURL(selectedObjectUrl);
-    selectedObjectUrl = URL.createObjectURL(file);
-
     const mb = (file.size / (1024 * 1024)).toFixed(2);
     const kind = window.StarkP2P.getFileKind(file.name, file.type).toUpperCase();
     fileNameEl.textContent = `${file.name} (${mb} MB)`;
-    fileHintEl.textContent = `LISTO [${kind}] • DESLIZA HACIA ARRIBA ↑ O PULSA PROYECTAR`;
+    fileHintEl.textContent = `LISTO [${kind}] • DESLIZA ↑ O TOCA TRANSMITIR`;
     flickZone.classList.add('ready');
     if (window.StarkAudio) window.StarkAudio.playLock();
   }
@@ -243,7 +249,6 @@
     if (f) setSelectedFile(f);
   });
 
-  // Built-in Demo Generator (Real JPEG Blob!)
   loadDemoBtn.addEventListener('click', () => {
     const c = document.createElement('canvas');
     c.width = 960;
@@ -252,159 +257,31 @@
     ctx.fillStyle = '#030c15';
     ctx.fillRect(0, 0, 960, 540);
     ctx.strokeStyle = 'rgba(0, 229, 255, 0.22)';
-    ctx.lineWidth = 1;
     for (let x = 0; x < 960; x += 48) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 540); ctx.stroke(); }
     for (let y = 0; y < 540; y += 48) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(960, y); ctx.stroke(); }
-    ctx.strokeStyle = '#00e5ff';
-    ctx.lineWidth = 5;
+    ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 5;
     ctx.beginPath(); ctx.arc(480, 270, 140, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = '#ffb300';
-    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#ffb300'; ctx.lineWidth = 4;
     ctx.beginPath(); ctx.arc(480, 270, 108, 0.4, Math.PI * 1.65); ctx.stroke();
-    ctx.strokeStyle = '#7bf5ff';
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    ctx.moveTo(480, 345); ctx.lineTo(410, 222); ctx.lineTo(550, 222); ctx.closePath();
-    ctx.stroke();
-    ctx.fillStyle = '#00e5ff';
-    ctx.font = 'bold 28px monospace';
+    ctx.strokeStyle = '#7bf5ff'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(480, 345); ctx.lineTo(410, 222); ctx.lineTo(550, 222); ctx.closePath(); ctx.stroke();
+    ctx.fillStyle = '#00e5ff'; ctx.font = 'bold 28px monospace';
     ctx.fillText('STARK INDUSTRIES // MARK VI OVERRIDE', 40, 62);
-    ctx.fillStyle = '#ffb300';
-    ctx.font = 'bold 18px monospace';
-    ctx.fillText('SIGNAL HIJACKED BY SR APPS — STARK BEAM', 40, 504);
+    ctx.fillStyle = '#ffb300'; ctx.font = 'bold 18px monospace';
+    ctx.fillText('TRANSMITIDO DESDE SR APPS — STARK BEAM', 40, 504);
 
     c.toBlob((blob) => {
       if (!blob) return;
-      const demoFile = new File([blob], 'Stark_Mark_VI_Demo.jpeg', { type: 'image/jpeg' });
-      setSelectedFile(demoFile);
-      showToast('DEMO CARGADO // TOCA PROYECTAR O DESLIZA ↑');
+      setSelectedFile(new File([blob], 'Stark_Mark_VI_Demo.jpeg', { type: 'image/jpeg' }));
+      showToast('DEMO LISTO // DESLIZA ↑ PARA TRANSMITIR');
     }, 'image/jpeg', 0.92);
   });
 
-  // ===== AR 3D HOMOGRAPHY PROJECTION =====
-  function updateArTransform() {
-    const W = window.innerWidth;
-    const H = window.innerHeight;
-    const pts = arCorners.map((p) => ({ x: p.x * W, y: p.y * H }));
-    const matrix = window.StarkVision.computeHomographyMatrix3d(640, 360, pts);
-    if (matrix) {
-      arPlane.style.transform = matrix;
-    }
-    arHandles.forEach((h, i) => {
-      h.style.left = pts[i].x + 'px';
-      h.style.top = pts[i].y + 'px';
-    });
-  }
-
-  function startArProjection() {
-    if (!selectedFile || !selectedObjectUrl) return;
-    const kind = window.StarkP2P.getFileKind(selectedFile.name, selectedFile.type);
-
-    arActive = true;
-    arStage.classList.add('active');
-    arImg.style.display = 'none';
-    arVideo.style.display = 'none';
-    arAudioOverlay.style.display = 'none';
-    arVideo.pause();
-    arAudioEl.pause();
-
-    if (kind === 'image') {
-      arImg.src = selectedObjectUrl;
-      arImg.style.display = 'block';
-    } else if (kind === 'audio') {
-      arAudioOverlay.style.display = 'flex';
-      arAudioName.textContent = selectedFile.name;
-      arAudioEl.src = selectedObjectUrl;
-      arAudioEl.play().catch(() => {});
-    } else {
-      arVideo.src = selectedObjectUrl;
-      arVideo.style.display = 'block';
-      arVideo.muted = false;
-      const p = arVideo.play();
-      if (p && p.catch) {
-        p.catch(() => {
-          arVideo.muted = true;
-          arVideo.play().catch(() => {});
-        });
-      }
-    }
-
-    arPinsVisible = true;
-    arHandles.forEach((h) => h.classList.add('visible'));
-    updateArTransform();
-    arPlane.classList.add('glitch-active');
-    setTimeout(() => arPlane.classList.remove('glitch-active'), 800);
-    showToast('AR ACTIVO // ARRASTRA LOS 4 PUNTOS AL MONITOR');
-  }
-
-  function stopArProjection() {
-    arActive = false;
-    arStage.classList.remove('active');
-    arVideo.pause();
-    arAudioEl.pause();
-    arHandles.forEach((h) => h.classList.remove('visible'));
-  }
-
-  togglePinsBtn.addEventListener('click', () => {
-    if (!arActive) {
-      arStage.classList.add('active');
-      arPinsVisible = true;
-      arHandles.forEach((h) => h.classList.add('visible'));
-      updateArTransform();
-      showToast('ARRASTRA LOS 4 PUNTOS ÁMBAR A LAS ESQUINAS');
-      return;
-    }
-    arPinsVisible = !arPinsVisible;
-    arHandles.forEach((h) => h.classList.toggle('visible', arPinsVisible));
-    arPlane.style.border = arPinsVisible ? '2px solid rgba(0, 229, 255, 0.75)' : 'none';
-    showToast(arPinsVisible ? 'PUNTOS DE AJUSTE VISIBLES' : 'VISTA LIMPIA SIN PUNTOS');
-  });
-
-  autoFitBtn.addEventListener('click', () => {
-    const res = window.StarkVision.detectScreenQuad(cameraVideo, scratchCanvas);
-    if (res && res.found) {
-      arCorners = res.quad;
-      updateArTransform();
-      if (window.StarkAudio) window.StarkAudio.playLock();
-      showToast('PANTALLA DETECTADA Y ENCAJADA ✓');
-    } else {
-      arCorners = [
-        { x: 0.12, y: 0.22 },
-        { x: 0.88, y: 0.22 },
-        { x: 0.88, y: 0.58 },
-        { x: 0.12, y: 0.58 },
-      ];
-      updateArTransform();
-      showToast('SIN PANTALLA BRILLANTE CLARA — ARRASTRA LOS 4 PUNTOS');
-    }
-  });
-
-  arHandles.forEach((handle) => {
-    handle.addEventListener('pointerdown', (e) => {
-      dragIdx = Number(handle.dataset.idx);
-      handle.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    });
-    handle.addEventListener('pointermove', (e) => {
-      if (dragIdx !== Number(handle.dataset.idx)) return;
-      const next = arCorners.map((p) => ({ ...p }));
-      next[dragIdx] = {
-        x: Math.max(0.02, Math.min(0.98, e.clientX / window.innerWidth)),
-        y: Math.max(0.08, Math.min(0.92, e.clientY / window.innerHeight)),
-      };
-      if (window.StarkVision.isValidConvexQuad(next, 0.015)) {
-        arCorners = next;
-        updateArTransform();
-      }
-    });
-    handle.addEventListener('pointerup', () => { dragIdx = -1; });
-  });
-
-  // ===== SENDER P2P (ENVIAR TV) =====
+  // ===== SENDER P2P =====
   function ensureSenderPeer() {
     return new Promise((resolve, reject) => {
       if (typeof window.Peer !== 'function') {
-        return reject(new Error('Sin conexión a motor P2P (verifica tu internet)'));
+        return reject(new Error('Sin conexión a motor P2P (verifica internet)'));
       }
       if (senderPeer && !senderPeer.destroyed && senderPeer.open) return resolve(senderPeer);
       if (senderPeer && !senderPeer.destroyed) {
@@ -415,8 +292,11 @@
       senderPeer = new window.Peer(window.StarkP2P.PEER_CONFIG);
       senderPeer.once('open', () => resolve(senderPeer));
       senderPeer.on('error', (err) => {
-        showToast(err.type === 'peer-unavailable' ? 'CÓDIGO NO ENCONTRADO EN RECIBIR TV' : 'ERROR P2P: ' + err.type);
+        connectingCode = null;
+        connectCodeBtn.disabled = false;
+        showToast(err.type === 'peer-unavailable' ? 'CÓDIGO NO ACTIVO EN RECEPTOR TV' : 'ERROR P2P: ' + err.type);
         connDot.className = 'status-dot';
+        updateRadarPill();
       });
     });
   }
@@ -424,16 +304,16 @@
   async function connectToReceiverCode(raw) {
     const code = window.StarkP2P.normalizeCode(raw);
     if (code.length < 4) {
-      showToast('ESCRIBE EL CÓDIGO DE 4 LETRAS DE LA PANTALLA RECEPTORA');
+      showToast('ESCRIBE EL CÓDIGO DE 4 LETRAS DEL RECEPTOR');
       return;
     }
     codeInput.value = code;
-    if (connectedCode === code && senderConn && senderConn.open) {
-      showToast(`YA ENLAZADO CON TV ${code}`);
-      return;
-    }
-    showToast(`CONECTANDO CON PANTALLA ${code}...`);
+    if (connectedCode === code && senderConn && senderConn.open) return;
+    if (connectingCode === code) return;
+
+    connectingCode = code;
     connectCodeBtn.disabled = true;
+    updateRadarPill();
 
     try {
       const p = await ensureSenderPeer();
@@ -444,18 +324,22 @@
 
       const timeout = setTimeout(() => {
         if (!nextConn.open) {
+          connectingCode = null;
           connectCodeBtn.disabled = false;
-          showToast('TIEMPO AGOTADO: VERIFICA QUE LA TV ESTÉ EN "RECIBIR TV"');
+          updateRadarPill();
+          showToast('NO RESPONDE — VERIFICA QUE LA TV ESTÉ EN "RECEPTOR TV"');
         }
       }, 12000);
 
       nextConn.on('open', () => {
         clearTimeout(timeout);
+        connectingCode = null;
         connectCodeBtn.disabled = false;
         connectedCode = code;
         connDot.className = 'status-dot online';
         if (window.StarkAudio) window.StarkAudio.playLock();
-        showToast(`ENLAZADO CON TV ${code} ✓`);
+        updateRadarPill();
+        showToast(`OBJETIVO ENLAZADO // PANTALLA ${code} ✓`);
       });
 
       nextConn.on('data', (msg) => {
@@ -468,16 +352,20 @@
 
       nextConn.on('close', () => {
         clearTimeout(timeout);
+        connectingCode = null;
         connectCodeBtn.disabled = false;
         if (senderConn === nextConn) {
           connectedCode = null;
           connDot.className = 'status-dot';
           remoteBar.classList.remove('show');
-          showToast('DESCONECTADO DE LA TV');
+          updateRadarPill();
+          showToast('DESCONECTADO DE LA PANTALLA');
         }
       });
     } catch (err) {
+      connectingCode = null;
       connectCodeBtn.disabled = false;
+      updateRadarPill();
       showToast(err.message || 'ERROR AL CONECTAR');
     }
   }
@@ -491,62 +379,57 @@
     const rxUrl = location.origin + location.pathname + '#receiver';
     if (navigator.share) {
       try {
-        await navigator.share({ title: 'STARK BEAM — Pantalla Receptora', url: rxUrl });
+        await navigator.share({ title: 'STARK BEAM — Receptor TV', url: rxUrl });
         return;
       } catch (_) {}
     }
     try {
       await navigator.clipboard.writeText(rxUrl);
-      showToast('LINK DE RECEPTOR COPIADO ✓');
+      showToast('LINK RECEPTOR COPIADO ✓');
     } catch (_) {
-      prompt('Abre este link en la TV o PC:', rxUrl);
+      prompt('Abre este link en la TV o monitor:', rxUrl);
     }
   });
 
-  // ===== EXECUTE BEAM (AR OR P2P) =====
+  // ===== BEAM EXECUTION =====
   async function executeBeam() {
     if (!selectedFile) {
-      showToast('PRIMERO TOCA "ELEGIR" O "DEMO"');
+      showToast('ELIGE UN ARCHIVO O TOCA "DEMO" PRIMERO');
       return;
     }
-    if (window.StarkAudio) window.StarkAudio.playBeam();
-
-    if (activeTab === 'ar') {
-      startArProjection();
-      return;
-    }
-
     if (!senderConn || !senderConn.open) {
       if (codeInput.value.trim().length >= 4) {
         await connectToReceiverCode(codeInput.value);
       } else {
-        showToast('APUNTA AL QR O ENLAZA EL CÓDIGO DE LA PANTALLA RECEPTORA');
+        showToast('APUNTA AL QR DEL RECEPTOR TV O ESCRIBE SU CÓDIGO ARRIBA');
       }
       return;
     }
 
+    if (window.StarkAudio) window.StarkAudio.playBeam();
     beamBtn.disabled = true;
     progressWrap.classList.add('show');
     progressBar.style.width = '2%';
+
     try {
       await window.StarkP2P.sendFileP2P(senderConn, selectedFile, (pct) => {
         progressBar.style.width = pct + '%';
         beamBtn.textContent = `ENVIANDO ${pct}%`;
       });
       remoteBar.classList.add('show');
-      showToast(`SEÑAL ENVIADA A TV ${connectedCode} ✓`);
+      showToast(`SEÑAL INYECTADA EN PANTALLA ${connectedCode} ✓`);
     } catch (err) {
-      showToast(err.message || 'ERROR EN ENVÍO P2P');
+      showToast(err.message || 'ERROR EN TRANSMISIÓN');
     } finally {
       beamBtn.disabled = false;
-      beamBtn.textContent = '▲ ENVIAR A TV';
+      beamBtn.textContent = '▲ TRANSMITIR A PANTALLA';
       setTimeout(() => progressWrap.classList.remove('show'), 600);
     }
   }
 
   beamBtn.addEventListener('click', executeBeam);
 
-  // Flick-Up Gesture on #flickZone
+  // Flick-Up Gesture
   let flickStartY = null;
   flickZone.addEventListener('pointerdown', (e) => {
     flickStartY = e.clientY;
@@ -570,16 +453,10 @@
     if (senderConn && senderConn.open) senderConn.send({ type: 'control', action, value });
   }
   restoreBtn.addEventListener('click', () => {
-    if (activeTab === 'ar') {
-      stopArProjection();
-      if (window.StarkAudio) window.StarkAudio.playRestore();
-      showToast('PROYECCIÓN AR DETENIDA');
-    } else {
-      sendControl('restore');
-      remoteBar.classList.remove('show');
-      if (window.StarkAudio) window.StarkAudio.playRestore();
-      showToast('PANTALLA LIBERADA');
-    }
+    sendControl('restore');
+    remoteBar.classList.remove('show');
+    if (window.StarkAudio) window.StarkAudio.playRestore();
+    showToast('PANTALLA LIBERADA');
   });
   playBtn.addEventListener('click', () => sendControl('play'));
   pauseBtn.addEventListener('click', () => sendControl('pause'));
@@ -587,17 +464,18 @@
   volSlider.addEventListener('input', () => sendControl('volume', Number(volSlider.value)));
   muteBtn.addEventListener('click', () => sendControl('mute'));
 
-  // ===== INTEGRATED RECEIVER LOGIC (RECIBIR TV) =====
+  // ===== INTEGRATED RECEIVER (RECEPTOR TV) =====
   function renderRxQr() {
     rxCodeText.textContent = rxCode;
     rxQrBox.innerHTML = '';
     if (typeof window.qrcode === 'function') {
-      const qr = window.qrcode(0, 'M');
-      qr.addData('STARK:' + rxCode);
+      // Version 1, Error Correction L (21x21 chunky modules -> scannable from 2-3+ meters!)
+      const qr = window.qrcode(0, 'L');
+      qr.addData('SB:' + rxCode);
       qr.make();
-      rxQrBox.innerHTML = qr.createImgTag(5, 0);
+      rxQrBox.innerHTML = qr.createImgTag(8, 0);
     } else {
-      rxQrBox.innerHTML = `<div class="hud-mono" style="color:#031018;font-weight:800;font-size:18px">STARK:${rxCode}</div>`;
+      rxQrBox.innerHTML = `<div class="hud-mono" style="color:#031018;font-weight:800;font-size:22px">SB:${rxCode}</div>`;
     }
   }
 
@@ -750,21 +628,21 @@
     rxPeer = new window.Peer(window.StarkP2P.peerIdForCode(rxCode), window.StarkP2P.PEER_CONFIG);
 
     rxPeer.on('open', () => {
-      rxConnStatus.innerHTML = '<span class="status-dot online"></span> LISTO // ESCANEA EL QR O INGRESA EL CÓDIGO';
+      rxConnStatus.innerHTML = '<span class="status-dot online"></span> LISTO // APUNTA TU CELULAR A ESTE QR';
     });
 
     rxPeer.on('connection', (conn) => {
       rxConn = conn;
       conn.on('open', () => {
         if (window.StarkAudio) window.StarkAudio.playLock();
-        rxConnStatus.innerHTML = '<span class="status-dot locked"></span> CELULAR ENLAZADO // ESPERANDO ARCHIVO';
+        rxConnStatus.innerHTML = '<span class="status-dot locked"></span> CELULAR STARK ENLAZADO // ESPERANDO ARCHIVO';
       });
       conn.on('data', (msg) => {
         if (handleRxPacket(msg)) return;
         if (msg && msg.type === 'control') handleRxControl(msg.action, msg.value);
       });
       conn.on('close', () => {
-        rxConnStatus.innerHTML = '<span class="status-dot online"></span> LISTO // ESCANEA EL QR O INGRESA EL CÓDIGO';
+        rxConnStatus.innerHTML = '<span class="status-dot online"></span> LISTO // APUNTA TU CELULAR A ESTE QR';
       });
     });
 
@@ -786,10 +664,8 @@
     rxUnlockBtn.classList.remove('btn-amber');
     rxUnlockBtn.classList.add('btn-primary');
   });
-
   rxNewCodeBtn.addEventListener('click', () => initReceiverPeer(true));
 
-  // Report receiver playback state back to phone
   setInterval(() => {
     if (!rxConn || !rxConn.open) return;
     const p = rxActiveKind === 'audio' ? rxAudio : rxActiveKind === 'video' ? rxVideo : null;
@@ -802,68 +678,195 @@
     });
   }, 500);
 
-  // ===== HUD & QR LOOP =====
+  // ===== REAL-TIME MONITOR DETECTION & STARK HUD RENDER LOOP =====
   function resizeHud() {
     hudCanvas.width = window.innerWidth;
     hudCanvas.height = window.innerHeight;
-    if (arActive || arPinsVisible) updateArTransform();
   }
   window.addEventListener('resize', resizeHud);
   resizeHud();
 
+  function drawCornerBrackets(ctx, pts, color, lineWidth, armLen) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'square';
+    for (let i = 0; i < 4; i++) {
+      const curr = pts[i];
+      const prev = pts[(i + 3) % 4];
+      const next = pts[(i + 1) % 4];
+
+      const v1x = prev.x - curr.x, v1y = prev.y - curr.y;
+      const l1 = Math.hypot(v1x, v1y) || 1;
+      const v2x = next.x - curr.x, v2y = next.y - curr.y;
+      const l2 = Math.hypot(v2x, v2y) || 1;
+
+      const a1 = Math.min(armLen, l1 * 0.35);
+      const a2 = Math.min(armLen, l2 * 0.35);
+
+      ctx.beginPath();
+      ctx.moveTo(curr.x + (v1x / l1) * a1, curr.y + (v1y / l1) * a1);
+      ctx.lineTo(curr.x, curr.y);
+      ctx.lineTo(curr.x + (v2x / l2) * a2, curr.y + (v2y / l2) * a2);
+      ctx.stroke();
+    }
+  }
+
   let frame = 0;
   function loop() {
     requestAnimationFrame(loop);
-    if (activeTab === 'rx') return;
+    if (activeTab !== 'scan') return;
     frame++;
 
     const W = hudCanvas.width;
     const H = hudCanvas.height;
     hudCtx.clearRect(0, 0, W, H);
 
-    // QR Scan in ENVIAR TV mode every 16 frames
-    if (activeTab === 'send' && frame % 16 === 0 && !qrScanBusy && cameraVideo.readyState >= 2 && Date.now() - lastQrAt > 3500) {
+    // 1. Run Connected-Component Optical Monitor Detection every 3 frames (~10-20 Hz)
+    if (frame % 3 === 0 && cameraVideo.readyState >= 2) {
+      const det = window.StarkVision.detectMonitors(cameraVideo, scratchCanvas, focusPoint);
+      if (det.best) {
+        missFrames = 0;
+        primaryMonitor = det.best;
+        secondaryMonitors = det.candidates.slice(1);
+        smoothPrimaryQuad = window.StarkVision.smoothQuad(smoothPrimaryQuad, det.best.quad, 0.3);
+        if (!wasMonitorLocked) {
+          wasMonitorLocked = true;
+          if (window.StarkAudio) window.StarkAudio.playLock();
+        }
+        updateRadarPill();
+      } else {
+        missFrames++;
+        if (missFrames > 6) {
+          primaryMonitor = null;
+          secondaryMonitors = [];
+          smoothPrimaryQuad = null;
+          wasMonitorLocked = false;
+          updateRadarPill();
+        }
+      }
+    }
+
+    // 2. Run High-Resolution ROI-Zoomed QR Beacon Scanner every 10 frames
+    if (frame % 10 === 0 && !qrScanBusy && cameraVideo.readyState >= 2 && Date.now() - lastQrAttemptAt > 1200) {
       qrScanBusy = true;
-      window.StarkVision.scanQrCode(cameraVideo, qrCanvas)
-        .then((code) => {
-          if (code && code !== connectedCode) {
-            lastQrAt = Date.now();
-            connectToReceiverCode(code);
+      const roi = primaryMonitor ? primaryMonitor.bbox : null;
+      window.StarkVision.scanQrBeacon(cameraVideo, qrCanvas, roi)
+        .then((hit) => {
+          if (hit && hit.code) {
+            detectedQrQuad = hit.quad;
+            detectedQrTime = Date.now();
+            if (hit.code !== connectedCode && hit.code !== connectingCode) {
+              lastQrAttemptAt = Date.now();
+              connectToReceiverCode(hit.code);
+            }
           }
         })
         .catch(() => {})
         .finally(() => { qrScanBusy = false; });
     }
 
-    // Center Stark Reticle
-    const cx = W / 2;
-    const cy = H * 0.42;
+    // 3. Draw Secondary Detected Monitors (subtle cyan outline)
+    secondaryMonitors.forEach((sec) => {
+      const pts = sec.quad.map((p) => window.StarkVision.mapVideoNormToCanvas(p, cameraVideo, W, H));
+      drawCornerBrackets(hudCtx, pts, 'rgba(0, 229, 255, 0.45)', 1.8, 16);
+    });
+
+    // 4. Draw Primary Locked Monitor Bounding Quad (Stark Target Lock!)
+    if (smoothPrimaryQuad && primaryMonitor) {
+      const pts = smoothPrimaryQuad.map((p) => window.StarkVision.mapVideoNormToCanvas(p, cameraVideo, W, H));
+      const lockColor = connectedCode ? '#00e676' : '#ffb300';
+
+      // Translucent HUD tint inside detected screen
+      hudCtx.save();
+      hudCtx.fillStyle = connectedCode ? 'rgba(0, 230, 118, 0.08)' : 'rgba(255, 179, 0, 0.08)';
+      hudCtx.beginPath();
+      hudCtx.moveTo(pts[0].x, pts[0].y);
+      hudCtx.lineTo(pts[1].x, pts[1].y);
+      hudCtx.lineTo(pts[2].x, pts[2].y);
+      hudCtx.lineTo(pts[3].x, pts[3].y);
+      hudCtx.closePath();
+      hudCtx.fill();
+
+      // Dashed perimeter + bold corner brackets
+      hudCtx.strokeStyle = connectedCode ? 'rgba(0, 230, 118, 0.55)' : 'rgba(0, 229, 255, 0.55)';
+      hudCtx.lineWidth = 1.4;
+      hudCtx.setLineDash([6, 6]);
+      hudCtx.stroke();
+      hudCtx.setLineDash([]);
+
+      drawCornerBrackets(hudCtx, pts, lockColor, 3.2, 26);
+
+      // Animated scanning laser inside the detected screen
+      if (!connectedCode) {
+        const sweep = (performance.now() * 0.0009) % 1;
+        const lx1 = pts[0].x + (pts[3].x - pts[0].x) * sweep;
+        const ly1 = pts[0].y + (pts[3].y - pts[0].y) * sweep;
+        const lx2 = pts[1].x + (pts[2].x - pts[1].x) * sweep;
+        const ly2 = pts[1].y + (pts[2].y - pts[1].y) * sweep;
+        hudCtx.strokeStyle = 'rgba(0, 229, 255, 0.85)';
+        hudCtx.lineWidth = 2;
+        hudCtx.beginPath();
+        hudCtx.moveTo(lx1, ly1);
+        hudCtx.lineTo(lx2, ly2);
+        hudCtx.stroke();
+      }
+
+      // Telemetry Tag above screen
+      const pct = Math.round(primaryMonitor.confidence * 100);
+      const tag = connectedCode
+        ? `TARGET LOCKED // TV ${connectedCode}`
+        : `DISPLAY LOCKED // ${pct}%`;
+      hudCtx.font = '700 11px ui-monospace, monospace';
+      const tw = hudCtx.measureText(tag).width + 14;
+      const tx = Math.max(10, Math.min(W - tw - 10, pts[0].x));
+      const ty = Math.max(142, pts[0].y - 10);
+      hudCtx.fillStyle = 'rgba(4, 14, 24, 0.84)';
+      hudCtx.fillRect(tx, ty - 16, tw, 20);
+      hudCtx.strokeStyle = lockColor;
+      hudCtx.lineWidth = 1;
+      hudCtx.strokeRect(tx, ty - 16, tw, 20);
+      hudCtx.fillStyle = lockColor;
+      hudCtx.fillText(tag, tx + 7, ty - 2);
+      hudCtx.restore();
+    }
+
+    // 5. Highlight exact QR beacon box when read
+    if (detectedQrQuad && Date.now() - detectedQrTime < 2200) {
+      const qPts = detectedQrQuad.map((p) => window.StarkVision.mapVideoNormToCanvas(p, cameraVideo, W, H));
+      drawCornerBrackets(hudCtx, qPts, '#00e676', 3, 18);
+    }
+
+    // 6. Center Stark Reticle (at focusPoint)
+    const cx = W * focusPoint.x;
+    const cy = H * focusPoint.y;
     const rot = performance.now() * 0.0008;
     hudCtx.save();
     hudCtx.translate(cx, cy);
-    hudCtx.strokeStyle = connectedCode || arActive ? 'rgba(255, 179, 0, 0.72)' : 'rgba(0, 229, 255, 0.5)';
-    hudCtx.lineWidth = 1.6;
-    hudCtx.beginPath(); hudCtx.arc(0, 0, 50, rot, rot + Math.PI * 1.25); hudCtx.stroke();
-    hudCtx.beginPath(); hudCtx.arc(0, 0, 38, -rot * 1.5, -rot * 1.5 + Math.PI * 0.85); hudCtx.stroke();
+    hudCtx.strokeStyle = connectedCode
+      ? 'rgba(0, 230, 118, 0.78)'
+      : primaryMonitor ? 'rgba(255, 179, 0, 0.72)' : 'rgba(0, 229, 255, 0.48)';
+    hudCtx.lineWidth = 1.5;
+    hudCtx.beginPath(); hudCtx.arc(0, 0, 44, rot, rot + Math.PI * 1.2); hudCtx.stroke();
+    hudCtx.beginPath(); hudCtx.arc(0, 0, 32, -rot * 1.5, -rot * 1.5 + Math.PI * 0.8); hudCtx.stroke();
     hudCtx.beginPath();
-    hudCtx.moveTo(-12, 0); hudCtx.lineTo(-4, 0);
-    hudCtx.moveTo(4, 0); hudCtx.lineTo(12, 0);
-    hudCtx.moveTo(0, -12); hudCtx.lineTo(0, -4);
-    hudCtx.moveTo(0, 4); hudCtx.lineTo(0, 12);
+    hudCtx.moveTo(-10, 0); hudCtx.lineTo(-4, 0);
+    hudCtx.moveTo(4, 0); hudCtx.lineTo(10, 0);
+    hudCtx.moveTo(0, -10); hudCtx.lineTo(0, -4);
+    hudCtx.moveTo(0, 4); hudCtx.lineTo(0, 10);
     hudCtx.stroke();
     hudCtx.restore();
   }
 
-  // Initial route check (#receiver or ?code=XXXX)
+  // Initial route (#receiver or ?code=XXXX)
   const hash = location.hash.toLowerCase();
   const qCode = new URLSearchParams(location.search).get('code');
   if (hash === '#receiver') {
     switchTab('rx');
   } else if (qCode) {
-    switchTab('send');
+    switchTab('scan');
     connectToReceiverCode(qCode);
   } else {
-    switchTab('ar');
+    switchTab('scan');
   }
   loop();
 })();

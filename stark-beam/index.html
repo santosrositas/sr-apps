@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="STARK BEAM" />
   <meta name="theme-color" content="#050a0f" />
-  <title>STARK BEAM // SR Apps</title>
+  <title>STARK BEAM // Escáner y Receptor de Pantallas</title>
   <link rel="manifest" href="./manifest.json" />
   <link rel="icon" type="image/svg+xml" href="./icon.svg" />
   <link rel="apple-touch-icon" href="./icon.svg" />
@@ -18,7 +18,7 @@
       background: #03080d;
     }
 
-    /* ===== SHARED TOP NAVIGATION ===== */
+    /* ===== TOP NAVIGATION (2 CLEAN MODES: ESCÁNER + RECEPTOR) ===== */
     .top-bar {
       position: fixed;
       top: max(8px, env(safe-area-inset-top));
@@ -28,14 +28,14 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 6px;
+      gap: 8px;
       padding: 6px 8px;
-      max-width: 620px;
+      max-width: 580px;
       margin: 0 auto;
     }
     .mode-switch {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: 1fr 1fr;
       flex: 1;
       background: rgba(0, 0, 0, 0.52);
       border: 1px solid var(--border-hud);
@@ -47,14 +47,13 @@
       border: none;
       background: transparent;
       color: var(--text-muted);
-      padding: 7px 6px;
+      padding: 8px 10px;
       border-radius: 6px;
       font-family: var(--font-mono);
-      font-size: 11px;
+      font-size: 11.5px;
       font-weight: 700;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.06em;
       cursor: pointer;
-      white-space: nowrap;
     }
     .mode-btn.active {
       background: var(--cyan);
@@ -65,7 +64,7 @@
       color: #120b00;
     }
 
-    /* ===== CAMERA / SCANNER VIEW (AR CAM + ENVIAR) ===== */
+    /* ===== SCANNER VIEW ===== */
     #scannerView {
       position: fixed;
       inset: 0;
@@ -87,73 +86,13 @@
       inset: 0;
       width: 100%;
       height: 100%;
-      pointer-events: none;
       z-index: 6;
     }
-
-    /* AR 3D Homography Stage */
-    #arStage {
-      position: absolute;
-      inset: 0;
-      z-index: 8;
-      pointer-events: none;
-      display: none;
-    }
-    #arStage.active { display: block; }
-    #arPlane {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 640px;
-      height: 360px;
-      transform-origin: 0 0;
-      will-change: transform;
-      backface-visibility: hidden;
-      -webkit-backface-visibility: hidden;
-      overflow: hidden;
-      background: #000;
-      border: 2px solid rgba(0, 229, 255, 0.75);
-      box-shadow: 0 0 26px rgba(0, 229, 255, 0.45);
-    }
-    #arImg, #arVideo {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: none;
-    }
-    #arAudioOverlay {
-      width: 100%;
-      height: 100%;
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: radial-gradient(circle, #0b2638 0%, #030a12 80%);
-      color: var(--cyan);
-      font-family: var(--font-mono);
-      text-align: center;
-      padding: 20px;
-    }
-    .ar-handle {
-      position: absolute;
-      width: 38px;
-      height: 38px;
-      margin: -19px 0 0 -19px;
-      border-radius: 50%;
-      border: 3px solid var(--amber);
-      background: rgba(255, 179, 0, 0.3);
-      box-shadow: 0 0 16px rgba(255, 179, 0, 0.9);
-      pointer-events: auto;
-      touch-action: none;
-      z-index: 18;
-      display: none;
-    }
-    .ar-handle.visible { display: block; }
 
     #cameraOverlayPrompt {
       position: absolute;
       inset: 0;
-      z-index: 12;
+      z-index: 14;
       display: none;
       flex-direction: column;
       align-items: center;
@@ -165,27 +104,31 @@
     }
     #cameraOverlayPrompt.show { display: flex; }
 
-    /* P2P Bar (only in ENVIAR mode) */
-    #p2pBar {
+    /* Pairing + Radar Status Strip */
+    .hud-header-stack {
       position: fixed;
-      top: calc(max(8px, env(safe-area-inset-top)) + 54px);
+      top: calc(max(8px, env(safe-area-inset-top)) + 56px);
       left: 8px;
       right: 8px;
       z-index: 25;
-      display: none;
+      max-width: 580px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .pair-bar {
+      display: flex;
       align-items: center;
       gap: 6px;
-      padding: 8px 10px;
-      max-width: 560px;
-      margin: 0 auto;
+      padding: 7px 9px;
     }
-    #p2pBar.show { display: flex; }
     #codeInput {
-      width: 88px;
+      width: 86px;
       background: rgba(0, 229, 255, 0.1);
       border: 1px solid var(--border-hud);
       border-radius: 8px;
-      padding: 8px 6px;
+      padding: 7px 6px;
       color: var(--cyan);
       font-family: var(--font-mono);
       font-size: 14px;
@@ -194,6 +137,30 @@
       text-transform: uppercase;
       text-align: center;
       outline: none;
+    }
+    #radarStatus {
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(5, 14, 23, 0.82);
+      border: 1px solid rgba(0, 229, 255, 0.28);
+      font-size: 11px;
+      color: var(--cyan);
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      align-self: center;
+      max-width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #radarStatus.locked {
+      border-color: rgba(255, 179, 0, 0.65);
+      color: var(--amber);
+    }
+    #radarStatus.connected {
+      border-color: rgba(0, 230, 118, 0.65);
+      color: var(--success);
     }
 
     /* Bottom Dock */
@@ -207,7 +174,7 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      max-width: 560px;
+      max-width: 580px;
       margin: 0 auto;
     }
     .dock-row {
@@ -270,71 +237,62 @@
     #remoteBar.show { display: flex; }
     .range-slider { flex: 1; accent-color: var(--cyan); }
 
-    /* ===== RECEIVER VIEW (INTEGRATED ON SAME PAGE!) ===== */
+    /* ===== INTEGRATED RECEIVER SCREEN (HIGH-CONTRAST OPTICAL BEACON) ===== */
     #receiverView {
       position: fixed;
       inset: 0;
       display: none;
       align-items: center;
       justify-content: center;
-      background: radial-gradient(circle at center, #081826 0%, #02060a 75%);
+      background: radial-gradient(circle at center, #0d2a3d 0%, #05111b 75%);
       z-index: 15;
     }
     #receiverView.active { display: flex; }
 
-    .rx-corner {
+    /* Luminous border frame so the scanner's optical monitor detector locks onto it instantly */
+    .rx-bezel-frame {
       position: fixed;
-      width: 46px;
-      height: 46px;
+      inset: 14px;
+      border: 3px solid rgba(0, 229, 255, 0.72);
+      border-radius: 10px;
+      box-shadow: inset 0 0 36px rgba(0, 229, 255, 0.16), 0 0 24px rgba(0, 229, 255, 0.25);
       pointer-events: none;
-      z-index: 18;
+      z-index: 17;
     }
-    .rx-corner::before, .rx-corner::after {
-      content: '';
-      position: absolute;
-      background: var(--cyan);
-      box-shadow: 0 0 12px rgba(0, 229, 255, 0.7);
-    }
-    .rx-corner.tl { top: 68px; left: 16px; }
-    .rx-corner.tl::before { top: 0; left: 0; width: 32px; height: 3px; }
-    .rx-corner.tl::after  { top: 0; left: 0; width: 3px; height: 32px; }
-    .rx-corner.tr { top: 68px; right: 16px; }
-    .rx-corner.tr::before { top: 0; right: 0; width: 32px; height: 3px; }
-    .rx-corner.tr::after  { top: 0; right: 0; width: 3px; height: 32px; }
-    .rx-corner.bl { bottom: 16px; left: 16px; }
-    .rx-corner.bl::before { bottom: 0; left: 0; width: 32px; height: 3px; }
-    .rx-corner.bl::after  { bottom: 0; left: 0; width: 3px; height: 32px; }
-    .rx-corner.br { bottom: 16px; right: 16px; }
-    .rx-corner.br::before { bottom: 0; right: 0; width: 32px; height: 3px; }
-    .rx-corner.br::after  { bottom: 0; right: 0; width: 3px; height: 32px; }
 
     #rxStandby {
       display: flex;
       flex-direction: column;
       align-items: center;
       text-align: center;
-      gap: 12px;
-      padding: 72px 20px 24px;
-      max-width: 460px;
+      gap: 14px;
+      padding: 68px 20px 24px;
+      max-width: 520px;
+      z-index: 20;
     }
+    /* Large, ultra-crisp QR with thick white quiet zone readable from 2-3 meters away */
     #rxQrBox {
       background: #ffffff;
-      padding: 10px;
-      border-radius: 14px;
-      box-shadow: 0 0 32px rgba(0, 229, 255, 0.35);
-      min-width: 158px;
-      min-height: 158px;
+      padding: 18px;
+      border-radius: 16px;
+      box-shadow: 0 0 42px rgba(0, 229, 255, 0.42);
       display: flex;
       align-items: center;
       justify-content: center;
     }
-    #rxQrBox img { display: block; width: 148px; height: 148px; image-rendering: pixelated; }
+    #rxQrBox img {
+      display: block;
+      width: min(56vw, 256px);
+      height: min(56vw, 256px);
+      image-rendering: pixelated;
+    }
     .rx-code {
-      font-size: clamp(32px, 8vw, 56px);
+      font-size: clamp(36px, 9vw, 64px);
       font-weight: 800;
-      letter-spacing: 0.24em;
+      letter-spacing: 0.26em;
       color: var(--cyan);
-      text-shadow: 0 0 24px rgba(0, 229, 255, 0.5);
+      text-shadow: 0 0 26px rgba(0, 229, 255, 0.55);
+      line-height: 1;
     }
 
     #rxTransfer {
@@ -345,7 +303,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: rgba(2, 10, 18, 0.9);
+      background: rgba(2, 10, 18, 0.92);
       gap: 12px;
     }
     #rxTransfer.show { display: flex; }
@@ -424,7 +382,7 @@
 
     #toast {
       position: fixed;
-      top: calc(max(8px, env(safe-area-inset-top)) + 114px);
+      top: calc(max(8px, env(safe-area-inset-top)) + 148px);
       left: 50%;
       transform: translateX(-50%);
       z-index: 60;
@@ -446,68 +404,54 @@
   </style>
 </head>
 <body>
-  <!-- UNIFIED TOP BAR -->
+  <!-- TOP NAVIGATION -->
   <header class="top-bar glass-panel">
-    <span id="connDot" class="status-dot locked"></span>
+    <span id="connDot" class="status-dot"></span>
     <div class="mode-switch">
-      <button id="tabArBtn" class="mode-btn active" type="button">AR CAM</button>
-      <button id="tabSendBtn" class="mode-btn" type="button">ENVIAR TV</button>
-      <button id="tabRxBtn" class="mode-btn" type="button">RECIBIR TV</button>
+      <button id="tabScanBtn" class="mode-btn active" type="button">◎ ESCÁNER</button>
+      <button id="tabRxBtn" class="mode-btn" type="button">▣ RECEPTOR TV</button>
     </div>
     <button id="flipCamBtn" class="btn btn-sm" type="button" title="Cambiar cámara">↺</button>
   </header>
 
   <div id="toast"></div>
 
-  <!-- ===== VIEW 1 & 2: CAMERA SCANNER (AR CAM + ENVIAR TV) ===== -->
+  <!-- ===== MODE 1: OPTICAL MONITOR SCANNER & P2P SENDER ===== -->
   <div id="scannerView">
     <video id="cameraVideo" autoplay playsinline webkit-playsinline muted></video>
+    <canvas id="hudCanvas"></canvas>
 
     <div id="cameraOverlayPrompt">
-      <div class="hud-mono" style="color:var(--amber);font-size:15px;letter-spacing:0.12em">ACTIVAR CÁMARA STARK</div>
+      <div class="hud-mono" style="color:var(--amber);font-size:15px;letter-spacing:0.12em">ACTIVAR ESCÁNER ÓPTICO</div>
       <p id="camErrorText" style="color:var(--text-muted);font-size:13px;max-width:300px;line-height:1.5">
-        Toca el botón para encender la cámara trasera de tu celular.
+        Toca el botón para encender la cámara trasera y detectar pantallas y monitores.
       </p>
       <button id="startCamBtn" class="btn btn-primary" type="button">ENCENDER CÁMARA</button>
     </div>
 
-    <div id="arStage">
-      <div id="arPlane">
-        <img id="arImg" alt="AR Media" />
-        <video id="arVideo" playsinline webkit-playsinline loop x-webkit-airplay="allow"></video>
-        <div id="arAudioOverlay">
-          <div style="font-size:20px;letter-spacing:0.14em">ARC AUDIO OVERRIDE</div>
-          <div id="arAudioName" style="margin-top:8px;font-size:13px;color:var(--amber)"></div>
-        </div>
+    <div class="hud-header-stack">
+      <div class="glass-panel pair-bar">
+        <input id="codeInput" type="text" maxlength="6" placeholder="CÓDIGO" autocomplete="off" />
+        <button id="connectCodeBtn" class="btn btn-primary btn-sm" type="button">ENLAZAR</button>
+        <button id="copyRxLinkBtn" class="btn btn-amber btn-sm" style="margin-left:auto" type="button">LINK TV</button>
       </div>
-      <div class="ar-handle" data-idx="0"></div>
-      <div class="ar-handle" data-idx="1"></div>
-      <div class="ar-handle" data-idx="2"></div>
-      <div class="ar-handle" data-idx="3"></div>
-    </div>
-
-    <canvas id="hudCanvas"></canvas>
-
-    <!-- P2P Pairing Strip (only in ENVIAR TV mode) -->
-    <div id="p2pBar" class="glass-panel">
-      <input id="codeInput" type="text" maxlength="6" placeholder="CÓDIGO" autocomplete="off" />
-      <button id="connectCodeBtn" class="btn btn-primary btn-sm" type="button">ENLAZAR</button>
-      <button id="copyRxLinkBtn" class="btn btn-amber btn-sm" style="margin-left:auto" type="button">COPIAR LINK TV</button>
+      <div id="radarStatus" class="hud-mono">
+        <span class="status-dot"></span>
+        <span id="radarStatusText">ESCANEANDO MONITORES...</span>
+      </div>
     </div>
 
     <!-- Bottom Controls -->
     <section class="bottom-dock glass-panel">
-      <!-- Standalone file buttons (outside swipe capture so iOS Safari always opens gallery cleanly) -->
       <div class="dock-row">
         <button id="pickFileBtn" class="btn btn-sm" style="flex:1" type="button">＋ ELEGIR JPEG / MP3 / MP4 / MOV</button>
         <button id="loadDemoBtn" class="btn btn-amber btn-sm" type="button">DEMO</button>
         <input id="fileInput" type="file" accept="image/*,audio/*,video/*,.jpg,.jpeg,.png,.mp3,.mp4,.mov" style="display:none" />
       </div>
 
-      <!-- Swipe-up Flick Launch Zone -->
       <div id="flickZone">
         <div id="fileName" class="file-name hud-mono">NINGÚN ARCHIVO SELECCIONADO</div>
-        <div id="fileHint" class="file-hint hud-mono">Elige un archivo o toca DEMO • Desliza ↑ para lanzar</div>
+        <div id="fileHint" class="file-hint hud-mono">Apunta a una pantalla • Desliza ↑ para transmitir</div>
       </div>
 
       <div id="progressWrap" class="progress-wrap">
@@ -515,9 +459,7 @@
       </div>
 
       <div class="dock-row">
-        <button id="beamBtn" class="btn btn-primary" style="flex:1" type="button">▲ PROYECTAR AR</button>
-        <button id="autoFitBtn" class="btn btn-sm" type="button" title="Auto-detectar monitor">AUTO</button>
-        <button id="togglePinsBtn" class="btn btn-amber btn-sm" type="button">PUNTOS</button>
+        <button id="beamBtn" class="btn btn-primary" style="flex:1" type="button">▲ TRANSMITIR A PANTALLA</button>
         <button id="restoreBtn" class="btn btn-danger btn-sm" type="button">LIBERAR</button>
       </div>
 
@@ -537,16 +479,13 @@
     </section>
   </div>
 
-  <!-- ===== VIEW 3: INTEGRATED RECEIVER SCREEN (RECIBIR TV) ===== -->
+  <!-- ===== MODE 2: INTEGRATED RECEIVER TV / MONITOR ===== -->
   <div id="receiverView">
-    <div class="rx-corner tl"></div>
-    <div class="rx-corner tr"></div>
-    <div class="rx-corner bl"></div>
-    <div class="rx-corner br"></div>
+    <div class="rx-bezel-frame"></div>
 
     <div id="rxStandby">
       <div class="hud-mono" style="font-size:11px;letter-spacing:0.18em;color:var(--text-muted)">
-        PANTALLA RECEPTORA // ESCANEA ESTE QR DESDE OTRO CELULAR
+        PANTALLA RECEPTORA // APUNTA CON EL ESCÁNER STARK
       </div>
       <div id="rxQrBox"></div>
       <div id="rxCodeText" class="rx-code hud-mono">----</div>
@@ -554,7 +493,7 @@
         <span class="status-dot"></span> INICIALIZANDO SEÑAL P2P...
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
-        <button id="rxUnlockBtn" class="btn btn-amber btn-sm" type="button">ACTIVAR AUDIO / FULLSCREEN</button>
+        <button id="rxUnlockBtn" class="btn btn-amber btn-sm" type="button">AUDIO Y PANTALLA COMPLETA</button>
         <button id="rxNewCodeBtn" class="btn btn-sm" type="button">NUEVO CÓDIGO</button>
       </div>
     </div>
@@ -585,8 +524,6 @@
 
     <button id="rxExitMediaBtn" class="btn btn-danger btn-sm" type="button">✕ SALIR</button>
   </div>
-
-  <audio id="arAudioEl" playsinline></audio>
 
   <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
