@@ -4,16 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>SR Apps</title>
-  <meta name="description" content="SR Apps — Aplicaciones móviles profesionales." />
   <meta name="theme-color" content="#040608" />
   <style>
     :root {
       --bg: #040608;
-      --surface: #0b0f14;
       --border: rgba(255, 255, 255, 0.1);
       --text: #f1f5f9;
       --muted: #94a3b8;
-      --accent: #38bdf8;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -30,7 +27,7 @@
       max-width: 680px;
       display: flex;
       flex-direction: column;
-      gap: 28px;
+      gap: 24px;
     }
     header {
       padding-bottom: 18px;
@@ -46,50 +43,7 @@
       color: var(--muted);
       letter-spacing: 0.12em;
     }
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 22px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      text-decoration: none;
-      color: inherit;
-      transition: border-color 0.18s ease, transform 0.16s ease;
-    }
-    .card:hover {
-      border-color: rgba(255, 255, 255, 0.24);
-      transform: translateY(-2px);
-    }
-    .card-top { display: flex; align-items: center; gap: 14px; }
-    .icon {
-      width: 52px;
-      height: 52px;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: #040608;
-    }
-    .title { font-size: 18px; font-weight: 600; }
-    .sub {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 11px;
-      color: var(--accent);
-      letter-spacing: 0.08em;
-      margin-top: 3px;
-    }
-    .desc { font-size: 14px; line-height: 1.5; color: var(--muted); }
-    .cta {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 12px 16px;
-      border-radius: 11px;
-      background: var(--text);
-      color: #040608;
-      font-size: 13px;
-      font-weight: 600;
-    }
+    p { font-size: 14px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -98,20 +52,7 @@
       <h1>SR APPS</h1>
       <span class="tag">MOBILE SUITE</span>
     </header>
-
-    <a class="card" href="./stark-beam/">
-      <div class="card-top">
-        <img class="icon" src="./stark-beam/icon.svg" alt="STARK BEAM" />
-        <div>
-          <div class="title">STARK BEAM</div>
-          <div class="sub">OPTICAL DISPLAY PROJECTION</div>
-        </div>
-      </div>
-      <p class="desc">
-        Escáner óptico de pantallas con proyección inalámbrica de JPEG, MP3, MP4 y MOV hacia monitores Windows, TVs AirPlay/Cast y receptores web.
-      </p>
-      <span class="cta">Abrir STARK BEAM →</span>
-    </a>
+    <p>Repositorio listo para tus próximas aplicaciones.</p>
   </main>
 </body>
 </html>
