@@ -1,5 +1,5 @@
 /**
- * Computer Vision, QR Beacon Scanner & 3D Homography Solver for STARK BEAM PWA.
+ * Computer Vision, Convex Quad Validator, QR Scanner & 3D Homography Engine.
  */
 (function (root) {
   function solveLinearSystem(A, b) {
@@ -27,7 +27,26 @@
     return M.map((row) => row[n]);
   }
 
+  /**
+   * Checks that 4 points [TL, TR, BR, BL] form a valid convex clockwise quadrilateral
+   * with sufficient area so matrix3d never collapses or inverts.
+   */
+  function isValidConvexQuad(pts, minArea = 0.02) {
+    if (!pts || pts.length !== 4) return false;
+    let area2 = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % 4];
+      const c = pts[(i + 2) % 4];
+      const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (cross <= 1e-5) return false; // Must be strictly clockwise in screen coords (Y down)
+      area2 += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(area2) * 0.5 >= minArea;
+  }
+
   function computeHomographyMatrix3d(width, height, dstPoints) {
+    if (!isValidConvexQuad(dstPoints, 200)) return null;
     const src = [
       [0, 0],
       [width, 0],
@@ -45,7 +64,7 @@
       b.push(dy);
     }
     const h = solveLinearSystem(A, b);
-    if (!h) return null;
+    if (!h || h.some((v) => !isFinite(v))) return null;
     const m = [
       h[0], h[3], 0, h[6],
       h[1], h[4], 0, h[7],
@@ -77,23 +96,19 @@
       if (l > maxL) maxL = l;
     }
     const mean = sum / (W * H);
-    const threshold = Math.max(mean + (maxL - mean) * 0.42, 115);
+    const threshold = Math.max(mean + (maxL - mean) * 0.48, 125);
 
-    const marginX = Math.floor(W * 0.04);
-    const marginY = Math.floor(H * 0.04);
+    const mx = Math.floor(W * 0.06);
+    const my = Math.floor(H * 0.06);
     let count = 0;
     let minSum = Infinity, maxSum = -Infinity;
     let minDiff = Infinity, maxDiff = -Infinity;
     let tl = null, br = null, tr = null, bl = null;
 
-    for (let y = marginY; y < H - marginY; y++) {
-      for (let x = marginX; x < W - marginX; x++) {
+    for (let y = my; y < H - my; y++) {
+      for (let x = mx; x < W - mx; x++) {
         const idx = y * W + x;
-        const l = lum[idx];
-        const gx = Math.abs(lum[idx + 1] - lum[idx - 1]);
-        const gy = Math.abs(lum[idx + W] - lum[idx - W]);
-        if (l < threshold && !(gx + gy > 110 && l > mean * 1.05)) continue;
-
+        if (lum[idx] < threshold) continue;
         count++;
         const s = x + y;
         const d = x - y;
@@ -105,8 +120,8 @@
     }
 
     const areaRatio = count / (W * H);
-    if (!tl || !tr || !br || !bl || areaRatio < 0.035 || areaRatio > 0.85) {
-      return { found: false, confidence: 0, quad: null };
+    if (!tl || !tr || !br || !bl || areaRatio < 0.04 || areaRatio > 0.78) {
+      return { found: false, quad: null };
     }
 
     const quad = [
@@ -115,28 +130,13 @@
       { x: br.x / W, y: br.y / H },
       { x: bl.x / W, y: bl.y / H },
     ];
-    const topW = quad[1].x - quad[0].x;
-    const botW = quad[2].x - quad[3].x;
-    const leftH = quad[3].y - quad[0].y;
-    const rightH = quad[2].y - quad[1].y;
-    if (topW < 0.14 || botW < 0.14 || leftH < 0.12 || rightH < 0.12) {
-      return { found: false, confidence: 0, quad: null };
+
+    if (!isValidConvexQuad(quad, 0.04)) {
+      return { found: false, quad: null };
     }
-    return { found: true, confidence: Math.min(0.99, 0.55 + Math.min(topW, botW) * 0.6), quad };
+    return { found: true, quad };
   }
 
-  function smoothQuad(prev, next, alpha = 0.25) {
-    if (!prev) return next.map((p) => ({ x: p.x, y: p.y }));
-    return prev.map((p, i) => ({
-      x: p.x + (next[i].x - p.x) * alpha,
-      y: p.y + (next[i].y - p.y) * alpha,
-    }));
-  }
-
-  /**
-   * Scans the camera video frame for a STARK BEAM Receiver QR beacon (`STARK:XXXX`).
-   * Works on both Android Chrome (native BarcodeDetector) and iOS Safari (jsQR fallback).
-   */
   let nativeDetector = null;
   if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
     try {
@@ -159,8 +159,8 @@
     }
 
     if (typeof window !== 'undefined' && typeof window.jsQR === 'function') {
-      const W = 360;
-      const H = Math.max(200, Math.round((videoEl.videoHeight / videoEl.videoWidth) * W));
+      const W = 320;
+      const H = Math.max(180, Math.round((videoEl.videoHeight / videoEl.videoWidth) * W));
       if (qrCanvas.width !== W || qrCanvas.height !== H) {
         qrCanvas.width = W;
         qrCanvas.height = H;
@@ -176,5 +176,10 @@
     return null;
   }
 
-  root.StarkVision = { computeHomographyMatrix3d, detectScreenQuad, smoothQuad, scanQrCode };
+  root.StarkVision = {
+    computeHomographyMatrix3d,
+    isValidConvexQuad,
+    detectScreenQuad,
+    scanQrCode,
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

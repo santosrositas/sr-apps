@@ -1,22 +1,6 @@
-const CACHE_NAME = 'stark-beam-v1';
-const CORE_ASSETS = [
-  './',
-  './index.html',
-  './receiver.html',
-  './manifest.json',
-  './icon.svg',
-  './css/stark.css',
-  './js/audio-fx.js',
-  './js/vision.js',
-  './js/p2p.js',
-  './js/scanner.js',
-  './js/receiver.js',
-];
+const CACHE_NAME = 'stark-beam-v2';
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)).catch(() => {})
-  );
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
@@ -36,8 +20,10 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     fetch(event.request)
       .then((res) => {
-        const clone = res.clone();
-        caches.open(CACHE_NAME).then((c) => c.put(event.request, clone)).catch(() => {});
+        if (res && res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(event.request, clone)).catch(() => {});
+        }
         return res;
       })
       .catch(() => caches.match(event.request))

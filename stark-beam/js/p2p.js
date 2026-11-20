@@ -1,11 +1,23 @@
 /**
- * Server-less WebRTC P2P Engine for STARK BEAM (Powered by PeerJS).
- * Streams JPEG, PNG, MP3, MP4, and MOV files directly Phone <-> TV in 64KB chunks
- * with DataChannel backpressure handling so large videos transfer reliably on iOS & Android.
+ * Cross-browser WebRTC P2P Engine (iOS Safari + Android Chrome + Desktop).
+ * Uses JSON serialization with 12KB base64 chunks + explicit public STUN servers
+ * so WebRTC DataChannels never hit Safari's 16KB SCTP limit or BinaryPack bugs.
  */
 (function (root) {
   const PEER_PREFIX = 'sr-starkbeam-';
-  const CHUNK_SIZE = 64 * 1024; // 64 KB safe across Safari & Chrome WebRTC DataChannels
+  const CHUNK_BYTES = 12 * 1024; // 12 KB raw -> ~16 KB base64 (safe on iOS Safari & Android Chrome)
+
+  const PEER_CONFIG = {
+    debug: 0,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+      ],
+    },
+  };
 
   function normalizeCode(code) {
     return String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
@@ -31,21 +43,36 @@
     return 'video';
   }
 
+  function uint8ToBase64(u8) {
+    let bin = '';
+    const step = 0x4000;
+    for (let i = 0; i < u8.length; i += step) {
+      bin += String.fromCharCode.apply(null, u8.subarray(i, i + step));
+    }
+    return btoa(bin);
+  }
+
+  function base64ToUint8(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
   async function waitForBufferDrain(conn) {
     const dc = conn && conn.dataChannel;
     if (!dc) return;
-    while (dc.bufferedAmount > 512 * 1024 && conn.open) {
+    let tries = 0;
+    while (dc.bufferedAmount > 256 * 1024 && conn.open && tries < 400) {
       await new Promise((r) => setTimeout(r, 25));
+      tries++;
     }
   }
 
-  /**
-   * Streams a File/Blob over an open PeerJS DataConnection in 64KB chunks.
-   */
   async function sendFileP2P(conn, file, onProgress) {
-    if (!conn || !conn.open) throw new Error('Sin conexión P2P con la pantalla');
+    if (!conn || !conn.open) throw new Error('Sin conexión P2P activa con la pantalla');
     const id = 'm-' + Date.now().toString(36);
-    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_BYTES));
     const kind = getFileKind(file.name, file.type);
 
     conn.send({
@@ -59,27 +86,28 @@
     });
 
     for (let i = 0; i < totalChunks; i++) {
-      if (!conn.open) throw new Error('Conexión interrumpida durante transmisión');
-      const start = i * CHUNK_SIZE;
-      const slice = file.slice(start, Math.min(file.size, start + CHUNK_SIZE));
-      const buffer = await slice.arrayBuffer();
+      if (!conn.open) throw new Error('Se perdió la conexión con la pantalla');
+      const start = i * CHUNK_BYTES;
+      const slice = file.slice(start, Math.min(file.size, start + CHUNK_BYTES));
+      const buf = await slice.arrayBuffer();
+      const b64 = uint8ToBase64(new Uint8Array(buf));
+
       await waitForBufferDrain(conn);
       conn.send({
         type: 'file_chunk',
         id,
         index: i,
-        data: buffer,
+        b64,
       });
+
       if (onProgress) onProgress(Math.round(((i + 1) / totalChunks) * 100));
+      if (i % 8 === 0) await new Promise((r) => setTimeout(r, 0));
     }
 
     conn.send({ type: 'file_end', id });
     return { id, kind };
   }
 
-  /**
-   * Creates a receiver-side reassembler for incoming chunked P2P files.
-   */
   function createFileAssembler({ onStart, onProgress, onComplete }) {
     let current = null;
 
@@ -102,7 +130,7 @@
       }
 
       if (msg.type === 'file_chunk' && current && msg.id === current.id) {
-        current.chunks[msg.index] = msg.data;
+        current.chunks[msg.index] = msg.b64 ? base64ToUint8(msg.b64) : msg.data;
         current.received++;
         const pct = Math.round((current.received / current.totalChunks) * 100);
         if (onProgress) onProgress(pct, current);
@@ -123,6 +151,7 @@
   }
 
   root.StarkP2P = {
+    PEER_CONFIG,
     normalizeCode,
     peerIdForCode,
     generateCode,
