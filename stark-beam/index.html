@@ -443,13 +443,13 @@
     </div>
 
     <div class="hud-header-stack">
-      <div id="radarStrip" class="radar-strip">
-        <button id="rescanBtn" class="screen-chip amber" type="button">⟳ BUSCAR PANTALLAS</button>
+      <div id="radarStrip" class="radar-strip" style="justify-content:center">
+        <button id="rescanBtn" class="screen-chip amber" type="button">◎ RE-DETECTAR</button>
         <button id="roomBtn" class="screen-chip" type="button">CANAL: SR1</button>
       </div>
       <div id="radarStatus" class="hud-mono">
         <span class="status-dot"></span>
-        <span id="radarStatusText">BUSCANDO PANTALLAS EN AUTOMÁTICO...</span>
+        <span id="radarStatusText">APUNTA LA CÁMARA A UN MONITOR O TV...</span>
       </div>
     </div>
 
@@ -463,7 +463,7 @@
 
       <div id="flickZone">
         <div id="fileName" class="file-name hud-mono">NINGÚN ARCHIVO SELECCIONADO</div>
-        <div id="fileHint" class="file-hint hud-mono">Sin QR: se enlaza automático • Desliza ↑ para lanzar</div>
+        <div id="fileHint" class="file-hint hud-mono">Apunta al monitor que quieres controlar • Desliza ↑</div>
       </div>
 
       <div id="progressWrap" class="progress-wrap">
@@ -492,14 +492,15 @@
     </section>
   </div>
 
-  <!-- ===== MODE 2: INTEGRATED AUTO-DISCOVERY RECEIVER (NO QR REQUIRED) ===== -->
+  <!-- ===== MODE 2: INTEGRATED AUTO-DISCOVERY RECEIVER (OPTICAL HANDSHAKE) ===== -->
   <div id="receiverView">
     <div class="rx-bezel-frame"></div>
+    <div id="rxOpticalPulse" style="position:fixed;inset:0;z-index:38;background:radial-gradient(circle,#e0fcff 0%,#00e5ff 70%,#00b8d4 100%);opacity:0;pointer-events:none;transition:opacity 0.04s linear"></div>
 
     <div id="rxStandby">
       <div class="rx-reactor"></div>
       <div class="hud-mono" style="font-size:11px;letter-spacing:0.2em;color:var(--amber)">
-        AUTO-DESCUBRIMIENTO ACTIVO // SIN QR
+        DETECCIÓN ÓPTICA ACTIVA // SIN QR
       </div>
       <div id="rxDeviceTitle" class="rx-device-title hud-mono">MONITOR LISTO</div>
       <div id="rxConnStatus" class="hud-mono" style="font-size:12px;color:var(--text-muted)">
@@ -510,7 +511,7 @@
         <button id="rxRoomBtn" class="btn btn-sm" type="button">CANAL: SR1</button>
       </div>
       <div class="hud-mono" style="font-size:11px;color:var(--text-muted);max-width:400px;line-height:1.5">
-        Tu celular detectará esta pantalla automáticamente al abrir STARK BEAM en el mismo canal (sin escanear ningún código).
+        Apunta la cámara de tu celular directamente a esta pantalla: emitirá un breve pulso óptico para confirmar que es el monitor que estás viendo.
       </div>
     </div>
 

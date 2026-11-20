@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stark-beam-v5';
+const CACHE_NAME = 'stark-beam-v6';
 
 self.addEventListener('install', () => {
   self.skipWaiting();

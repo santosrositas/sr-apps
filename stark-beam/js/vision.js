@@ -319,6 +319,50 @@
     return null;
   }
 
+  /**
+   * Measures average luminance and cyan-channel intensity inside the inner 70% of a detected monitor bbox.
+   * Used for zero-QR optical pulse identification so only the monitor in camera view is locked.
+   */
+  function sampleBboxStats(videoEl, scratchCanvas, bbox) {
+    if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth || !bbox) return null;
+    const W = 120;
+    const H = Math.max(68, Math.round((videoEl.videoHeight / videoEl.videoWidth) * W));
+    if (scratchCanvas.width !== W || scratchCanvas.height !== H) {
+      scratchCanvas.width = W;
+      scratchCanvas.height = H;
+    }
+    const ctx = scratchCanvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(videoEl, 0, 0, W, H);
+    const { data } = ctx.getImageData(0, 0, W, H);
+
+    // Sample inner 70% of bbox to stay clear of bezel edges
+    const x0 = Math.max(0, Math.floor((bbox.x + bbox.w * 0.15) * W));
+    const x1 = Math.min(W - 1, Math.ceil((bbox.x + bbox.w * 0.85) * W));
+    const y0 = Math.max(0, Math.floor((bbox.y + bbox.h * 0.15) * H));
+    const y1 = Math.min(H - 1, Math.ceil((bbox.y + bbox.h * 0.85) * H));
+
+    let rSum = 0, gSum = 0, bSum = 0, lumSum = 0, cnt = 0;
+    for (let y = y0; y <= y1; y += 2) {
+      for (let x = x0; x <= x1; x += 2) {
+        const i = (y * W + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        rSum += r;
+        gSum += g;
+        bSum += b;
+        lumSum += (77 * r + 150 * g + 29 * b) >> 8;
+        cnt++;
+      }
+    }
+    if (!cnt) return null;
+    const rAvg = rSum / cnt;
+    const gAvg = gSum / cnt;
+    const bAvg = bSum / cnt;
+    const lumAvg = lumSum / cnt;
+    // Cyan dominance score boosts cyan-white Stark optical pulse over ambient flicker
+    const cyanAvg = (gAvg + bAvg) * 0.5;
+    return { lum: lumAvg, cyan: cyanAvg, r: rAvg, g: gAvg, b: bAvg };
+  }
+
   root.StarkVision = {
     detectMonitors,
     detectMonitorsFromRgba,
@@ -326,5 +370,6 @@
     mapVideoNormToCanvas,
     scanQrBeacon,
     parseStarkQrPayload,
+    sampleBboxStats,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
