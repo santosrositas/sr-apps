@@ -1,22 +1,18 @@
 /**
  * High-Precision Optical Monitor/Screen Detector & Long-Range QR Beacon Scanner.
- * - Stage 1: Connected-Component Labeling (CCL) on adaptive luminous regions,
- *   scored by rectangular fill ratio, monitor aspect ratio, bezel contrast, and center proximity.
- * - Stage 2: Native BarcodeDetector + ROI-zoomed high-res jsQR fallback (works from 2-3m+ on iOS & Android).
+ * - Uses 200px thin-bezel local-trough + dark-barrier segmentation so even modern
+ *   "frameless" monitors with 2-3px side bezels in bright offices lock cleanly
+ *   while rejecting white walls, desks, and ceiling glare.
+ * - Native BarcodeDetector + ROI-zoomed high-res jsQR fallback for long-range QR pairing.
  */
 (function (root) {
-  /**
-   * Detects lit monitors, TVs, laptops, or tablet screens in a video frame using
-   * connected-component labeling + rectangularity + bezel contrast scoring.
-   * Returns normalized coordinates in [0..1] relative to the video frame.
-   */
   function detectMonitors(videoEl, scratchCanvas, focusPoint) {
     if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) {
       return { best: null, candidates: [] };
     }
 
-    const W = 160;
-    const H = Math.max(90, Math.round((videoEl.videoHeight / videoEl.videoWidth) * W));
+    const W = 200;
+    const H = Math.max(112, Math.round((videoEl.videoHeight / videoEl.videoWidth) * W));
     if (scratchCanvas.width !== W || scratchCanvas.height !== H) {
       scratchCanvas.width = W;
       scratchCanvas.height = H;
@@ -26,50 +22,69 @@
     ctx.drawImage(videoEl, 0, 0, W, H);
     const { data } = ctx.getImageData(0, 0, W, H);
 
+    return detectMonitorsFromRgba(data, W, H, focusPoint);
+  }
+
+  function detectMonitorsFromRgba(data, W, H, focusPoint) {
     const N = W * H;
     const lum = new Uint8Array(N);
-    const hist = new Uint32Array(256);
     let sum = 0;
 
     for (let i = 0, p = 0; i < data.length; i += 4, p++) {
       const l = (77 * data[i] + 150 * data[i + 1] + 29 * data[i + 2]) >> 8;
       lum[p] = l;
-      hist[l]++;
       sum += l;
     }
-
     const mean = sum / N;
-    // Compute 78th percentile luminance for adaptive threshold across dark/bright rooms
-    let acc = 0;
-    let p78 = 140;
-    const target78 = N * 0.78;
-    for (let v = 0; v < 256; v++) {
-      acc += hist[v];
-      if (acc >= target78) {
-        p78 = v;
-        break;
+    const darkThr = Math.max(60, Math.min(108, Math.round(mean * 0.68)));
+    const rawBarrier = new Uint8Array(N);
+
+    for (let y = 2; y < H - 2; y++) {
+      const row = y * W;
+      for (let x = 2; x < W - 2; x++) {
+        const idx = row + x;
+        const l = lum[idx];
+        if (l <= darkThr) {
+          rawBarrier[idx] = 1;
+          continue;
+        }
+        // Thin-bezel trough detector: seals 2-3px modern frameless bezels even in bright rooms
+        const hDrop = Math.min(lum[idx - 2], lum[idx + 2]) - l;
+        const vDrop = Math.min(lum[idx - 2 * W], lum[idx + 2 * W]) - l;
+        const gx = Math.abs(lum[idx + 1] - lum[idx - 1]);
+        const gy = Math.abs(lum[idx + W] - lum[idx - W]);
+        if (hDrop > 28 || vDrop > 28 || ((gx + gy) > 65 && l < darkThr + 55)) {
+          rawBarrier[idx] = 1;
+        }
       }
     }
-    const threshold = Math.max(85, Math.min(220, Math.round(Math.max(p78, mean + 26))));
 
-    // Binary mask of bright screen-like pixels
-    const mask = new Uint8Array(N);
-    for (let i = 0; i < N; i++) {
-      if (lum[i] >= threshold) mask[i] = 1;
+    // 1px dilation seals tiny glare gaps along thin bezels
+    const barrier = new Uint8Array(N);
+    for (let y = 1; y < H - 1; y++) {
+      const row = y * W;
+      for (let x = 1; x < W - 1; x++) {
+        const idx = row + x;
+        if (
+          rawBarrier[idx] ||
+          rawBarrier[idx - 1] || rawBarrier[idx + 1] ||
+          rawBarrier[idx - W] || rawBarrier[idx + W]
+        ) {
+          barrier[idx] = 1;
+        }
+      }
     }
 
-    // BFS Connected Component Labeling (4-connected, fast & zero recursion overflow)
     const visited = new Uint8Array(N);
     const queue = new Int32Array(N);
     const candidates = [];
-
     const fx = focusPoint ? focusPoint.x : 0.5;
-    const fy = focusPoint ? focusPoint.y : 0.45;
+    const fy = focusPoint ? focusPoint.y : 0.46;
 
     for (let y = 2; y < H - 2; y++) {
       for (let x = 2; x < W - 2; x++) {
         const start = y * W + x;
-        if (!mask[start] || visited[start]) continue;
+        if (barrier[start] || visited[start]) continue;
 
         let head = 0;
         let tail = 0;
@@ -82,6 +97,7 @@
         let minDiff = x - y, maxDiff = x - y;
         let tlX = x, tlY = y, brX = x, brY = y, trX = x, trY = y, blX = x, blY = y;
         let lumSum = 0;
+        let topTouch = false, botTouch = false, leftTouch = false, rightTouch = false;
 
         while (head < tail) {
           const idx = queue[head++];
@@ -95,6 +111,11 @@
           if (cy < minY) minY = cy;
           if (cy > maxY) maxY = cy;
 
+          if (cx <= 2) leftTouch = true;
+          if (cx >= W - 3) rightTouch = true;
+          if (cy <= 2) topTouch = true;
+          if (cy >= H - 3) botTouch = true;
+
           const s = cx + cy;
           const d = cx - cy;
           if (s < minSum) { minSum = s; tlX = cx; tlY = cy; }
@@ -102,23 +123,10 @@
           if (d > maxDiff) { maxDiff = d; trX = cx; trY = cy; }
           if (d < minDiff) { minDiff = d; blX = cx; blY = cy; }
 
-          // 4 neighbors
-          if (cx > 1) {
-            const n = idx - 1;
-            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
-          }
-          if (cx < W - 2) {
-            const n = idx + 1;
-            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
-          }
-          if (cy > 1) {
-            const n = idx - W;
-            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
-          }
-          if (cy < H - 2) {
-            const n = idx + W;
-            if (mask[n] && !visited[n]) { visited[n] = 1; queue[tail++] = n; }
-          }
+          if (cx > 1 && !barrier[idx - 1] && !visited[idx - 1]) { visited[idx - 1] = 1; queue[tail++] = idx - 1; }
+          if (cx < W - 2 && !barrier[idx + 1] && !visited[idx + 1]) { visited[idx + 1] = 1; queue[tail++] = idx + 1; }
+          if (cy > 1 && !barrier[idx - W] && !visited[idx - W]) { visited[idx - W] = 1; queue[tail++] = idx - W; }
+          if (cy < H - 2 && !barrier[idx + W] && !visited[idx + W]) { visited[idx + W] = 1; queue[tail++] = idx + W; }
         }
 
         const bw = maxX - minX + 1;
@@ -126,53 +134,66 @@
         const bboxArea = bw * bh;
         const areaRatio = bboxArea / N;
 
-        // Filter out tiny glare spots and full-frame bright walls
-        if (areaRatio < 0.025 || areaRatio > 0.86) continue;
-        if (bw < 18 || bh < 12) continue;
+        if (areaRatio < 0.035 || areaRatio > 0.88) continue;
+        if (bw < 28 || bh < 18) continue;
 
         const fillRatio = count / bboxArea;
-        if (fillRatio < 0.44) continue; // Reject non-rectangular shapes
+        if (fillRatio < 0.55) continue;
 
         const aspect = bw / bh;
-        if (aspect < 0.42 || aspect > 2.85) continue;
+        if (aspect < 0.45 || aspect > 2.75) continue;
 
-        // Measure bezel contrast (outer ring 3px outside bbox should be darker than screen interior)
-        const innerAvg = lumSum / count;
-        let borderSum = 0;
-        let borderCnt = 0;
-        const pad = 3;
+        // Reject bright walls/desks bleeding out of top or bottom frame edges
+        if (topTouch || botTouch) continue;
+        if (leftTouch && rightTouch) continue;
+
+        // Verify dark bezel surrounds the 4 sides
+        const pad = 2;
         const bx0 = Math.max(0, minX - pad);
         const bx1 = Math.min(W - 1, maxX + pad);
         const by0 = Math.max(0, minY - pad);
         const by1 = Math.min(H - 1, maxY + pad);
-
+        let bezelHits = 0;
+        let bezelChecks = 0;
         for (let sx = bx0; sx <= bx1; sx += 2) {
-          borderSum += lum[by0 * W + sx] + lum[by1 * W + sx];
-          borderCnt += 2;
+          if (barrier[by0 * W + sx]) bezelHits++;
+          if (barrier[by1 * W + sx]) bezelHits++;
+          bezelChecks += 2;
         }
         for (let sy = by0; sy <= by1; sy += 2) {
-          borderSum += lum[sy * W + bx0] + lum[sy * W + bx1];
-          borderCnt += 2;
+          if (barrier[sy * W + bx0]) bezelHits++;
+          if (barrier[sy * W + bx1]) bezelHits++;
+          bezelChecks += 2;
         }
-        const borderAvg = borderCnt > 0 ? borderSum / borderCnt : mean;
-        const contrast = Math.max(0, (innerAvg - borderAvg) / 255);
-        if (contrast < 0.09) continue; // Reject flat walls without bezel drop-off
+        const bezelCoverage = bezelChecks > 0 ? bezelHits / bezelChecks : 0;
+        if (bezelCoverage < 0.5) continue;
 
-        // Score candidate: favor rectangularity, bezel contrast, good size, and proximity to focus/center
+        const innerAvg = lumSum / count;
+        if (innerAvg < darkThr + 16) continue;
+
         const cxNorm = (minX + maxX) / (2 * W);
         const cyNorm = (minY + maxY) / (2 * H);
         const dist = Math.hypot(cxNorm - fx, cyNorm - fy);
-        const centerBonus = Math.max(0, 1 - dist * 1.4);
-        const aspectBonus = (aspect >= 1.15 && aspect <= 2.15) ? 0.22 : 0.08;
-        const sizeBonus = Math.min(0.3, areaRatio * 1.2);
-        const score = fillRatio * 0.35 + contrast * 0.45 + centerBonus * 0.28 + aspectBonus + sizeBonus;
+        const centerBonus = Math.max(0, 1 - dist * 1.35);
+        const aspectBonus = (aspect >= 1.2 && aspect <= 2.2) ? 0.24 : 0.1;
+        const enclosureBonus = (!leftTouch && !rightTouch) ? 0.25 : 0.05;
+        const sizeBonus = Math.min(0.32, areaRatio * 1.15);
 
-        // Blend axis-aligned bbox with extreme corners slightly for clean perspective silhouette
+        const score =
+          fillRatio * 0.32 +
+          bezelCoverage * 0.30 +
+          centerBonus * 0.26 +
+          aspectBonus +
+          enclosureBonus +
+          sizeBonus;
+
+        const padX = 1 / W;
+        const padY = 1 / H;
         const quad = [
-          { x: (tlX * 0.65 + minX * 0.35) / W, y: (tlY * 0.65 + minY * 0.35) / H },
-          { x: (trX * 0.65 + maxX * 0.35) / W, y: (trY * 0.65 + minY * 0.35) / H },
-          { x: (brX * 0.65 + maxX * 0.35) / W, y: (brY * 0.65 + maxY * 0.35) / H },
-          { x: (blX * 0.65 + minX * 0.35) / W, y: (blY * 0.65 + maxY * 0.35) / H },
+          { x: Math.max(0, (tlX * 0.45 + minX * 0.55) / W - padX), y: Math.max(0, (tlY * 0.45 + minY * 0.55) / H - padY) },
+          { x: Math.min(1, (trX * 0.45 + maxX * 0.55) / W + padX), y: Math.max(0, (trY * 0.45 + minY * 0.55) / H - padY) },
+          { x: Math.min(1, (brX * 0.45 + maxX * 0.55) / W + padX), y: Math.min(1, (brY * 0.45 + maxY * 0.55) / H + padY) },
+          { x: Math.max(0, (blX * 0.45 + minX * 0.55) / W - padX), y: Math.min(1, (blY * 0.45 + maxY * 0.55) / H + padY) },
         ];
 
         candidates.push({
@@ -180,8 +201,8 @@
           quad,
           aspect,
           fillRatio,
-          contrast,
-          confidence: Math.min(0.99, Math.max(0.55, score)),
+          bezelCoverage,
+          confidence: Math.min(0.99, Math.max(0.62, score * 0.72)),
           score,
         });
       }
@@ -199,10 +220,6 @@
     }));
   }
 
-  /**
-   * Maps video-normalized coordinates [0..1] to screen/canvas pixel coordinates
-   * accounting for CSS `object-fit: cover` cropping so the HUD box hugs the real monitor accurately!
-   */
   function mapVideoNormToCanvas(normPt, videoEl, canvasW, canvasH) {
     const vw = videoEl.videoWidth || canvasW;
     const vh = videoEl.videoHeight || canvasH;
@@ -232,17 +249,11 @@
     } catch (_) {}
   }
 
-  /**
-   * High-range QR Beacon scanner.
-   * Uses native BarcodeDetector first, then high-resolution ROI-cropped jsQR
-   * (zooming directly into the detected monitor bbox so QR codes are readable from 2-3m+).
-   */
   async function scanQrBeacon(videoEl, qrCanvas, roiBbox) {
     if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return null;
     const vw = videoEl.videoWidth;
     const vh = videoEl.videoHeight;
 
-    // 1. Native BarcodeDetector (full video resolution, hardware accelerated)
     if (nativeDetector) {
       try {
         const codes = await nativeDetector.detect(videoEl);
@@ -258,9 +269,7 @@
       } catch (_) {}
     }
 
-    // 2. ROI-zoomed high-res jsQR (works on iPhone Safari + all browsers!)
     if (typeof window !== 'undefined' && typeof window.jsQR === 'function') {
-      // Crop around detected monitor ROI (with 12% margin) or center 72% of frame
       let sx = 0, sy = 0, sw = vw, sh = vh;
       if (roiBbox) {
         const padX = roiBbox.w * 0.14;
@@ -270,10 +279,10 @@
         sw = Math.min(vw - sx, Math.ceil((roiBbox.w + padX * 2) * vw));
         sh = Math.min(vh - sy, Math.ceil((roiBbox.h + padY * 2) * vh));
       } else {
-        sx = Math.floor(vw * 0.12);
-        sy = Math.floor(vh * 0.12);
-        sw = Math.floor(vw * 0.76);
-        sh = Math.floor(vh * 0.76);
+        sx = Math.floor(vw * 0.1);
+        sy = Math.floor(vh * 0.1);
+        sw = Math.floor(vw * 0.8);
+        sh = Math.floor(vh * 0.8);
       }
 
       const targetW = Math.min(640, sw);
@@ -307,12 +316,12 @@
         }
       }
     }
-
     return null;
   }
 
   root.StarkVision = {
     detectMonitors,
+    detectMonitorsFromRgba,
     smoothQuad,
     mapVideoNormToCanvas,
     scanQrBeacon,
