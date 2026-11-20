@@ -1,10 +1,10 @@
 /**
- * Cross-browser WebRTC P2P Engine (iOS Safari + Android Chrome + Desktop).
- * Uses JSON serialization with 12KB base64 chunks + explicit public STUN servers
- * so WebRTC DataChannels never hit Safari's 16KB SCTP limit or BinaryPack bugs.
+ * Zero-QR Auto-Discovery WebRTC P2P Engine (iOS Safari + Android Chrome + Desktop).
+ * - Automatic room-slot discovery (slots 1..4) so Phone & TV/PC find each other with ZERO QR codes.
+ * - Uses JSON serialization with 12KB base64 chunks + public STUN servers for rock-solid iOS/Android streaming.
  */
 (function (root) {
-  const PEER_PREFIX = 'sr-starkbeam-';
+  const MAX_SLOTS = 4;
   const CHUNK_BYTES = 12 * 1024; // 12 KB raw -> ~16 KB base64 (safe on iOS Safari & Android Chrome)
 
   const PEER_CONFIG = {
@@ -19,21 +19,26 @@
     },
   };
 
-  function normalizeCode(code) {
-    return String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+  function normalizeRoom(room) {
+    const clean = String(room || 'sr1').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
+    return clean || 'sr1';
   }
 
-  function peerIdForCode(code) {
-    return PEER_PREFIX + normalizeCode(code).toLowerCase();
+  function slotPeerId(room, slotNum) {
+    return `sr-sb-${normalizeRoom(room)}-r${slotNum}`;
   }
 
-  function generateCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let out = '';
-    for (let i = 0; i < 4; i++) {
-      out += chars[Math.floor(Math.random() * chars.length)];
-    }
-    return out;
+  function detectDeviceName() {
+    if (typeof navigator === 'undefined') return 'Pantalla';
+    const ua = navigator.userAgent || '';
+    if (/SmartTV|Tizen|Web0S|BRAVIA|AppleTV|Roku|AFT/i.test(ua)) return 'Smart TV';
+    if (/Windows/i.test(ua)) return 'Monitor Windows';
+    if (/Macintosh|Mac OS/i.test(ua)) return 'Monitor Mac';
+    if (/iPad/i.test(ua)) return 'iPad';
+    if (/iPhone/i.test(ua)) return 'iPhone';
+    if (/Android/i.test(ua)) return 'Pantalla Android';
+    if (/Linux/i.test(ua)) return 'Monitor Linux';
+    return 'Pantalla Web';
   }
 
   function getFileKind(name, mime) {
@@ -70,7 +75,7 @@
   }
 
   async function sendFileP2P(conn, file, onProgress) {
-    if (!conn || !conn.open) throw new Error('Sin conexión P2P activa con la pantalla');
+    if (!conn || !conn.open) throw new Error('Sin conexión activa con la pantalla');
     const id = 'm-' + Date.now().toString(36);
     const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_BYTES));
     const kind = getFileKind(file.name, file.type);
@@ -151,10 +156,11 @@
   }
 
   root.StarkP2P = {
+    MAX_SLOTS,
     PEER_CONFIG,
-    normalizeCode,
-    peerIdForCode,
-    generateCode,
+    normalizeRoom,
+    slotPeerId,
+    detectDeviceName,
     getFileKind,
     sendFileP2P,
     createFileAssembler,

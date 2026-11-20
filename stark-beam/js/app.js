@@ -15,9 +15,9 @@
   const hudCanvas = document.getElementById('hudCanvas');
   const hudCtx = hudCanvas.getContext('2d');
 
-  const codeInput = document.getElementById('codeInput');
-  const connectCodeBtn = document.getElementById('connectCodeBtn');
-  const copyRxLinkBtn = document.getElementById('copyRxLinkBtn');
+  const radarStrip = document.getElementById('radarStrip');
+  const rescanBtn = document.getElementById('rescanBtn');
+  const roomBtn = document.getElementById('roomBtn');
   const radarStatus = document.getElementById('radarStatus');
   const radarStatusText = document.getElementById('radarStatusText');
 
@@ -30,6 +30,7 @@
   const progressWrap = document.getElementById('progressWrap');
   const progressBar = document.getElementById('progressBar');
   const beamBtn = document.getElementById('beamBtn');
+  const airplayBtn = document.getElementById('airplayBtn');
   const restoreBtn = document.getElementById('restoreBtn');
 
   const remoteBar = document.getElementById('remoteBar');
@@ -43,11 +44,10 @@
   // Receiver View
   const receiverView = document.getElementById('receiverView');
   const rxStandby = document.getElementById('rxStandby');
-  const rxQrBox = document.getElementById('rxQrBox');
-  const rxCodeText = document.getElementById('rxCodeText');
+  const rxDeviceTitle = document.getElementById('rxDeviceTitle');
   const rxConnStatus = document.getElementById('rxConnStatus');
   const rxUnlockBtn = document.getElementById('rxUnlockBtn');
-  const rxNewCodeBtn = document.getElementById('rxNewCodeBtn');
+  const rxRoomBtn = document.getElementById('rxRoomBtn');
   const rxTransfer = document.getElementById('rxTransfer');
   const rxBarFill = document.getElementById('rxBarFill');
   const rxTransferPct = document.getElementById('rxTransferPct');
@@ -63,37 +63,36 @@
   const rxOverrideSub = document.getElementById('rxOverrideSub');
   const rxExitMediaBtn = document.getElementById('rxExitMediaBtn');
 
+  // Native AirPlay / Cast bridge
+  const nativeCastVideo = document.getElementById('nativeCastVideo');
+
   // ===== STATE =====
   let activeTab = 'scan'; // 'scan' | 'rx'
+  let room = window.StarkP2P.normalizeRoom(localStorage.getItem('sr_stark_room') || 'sr1');
   let facingMode = 'environment';
   let camStream = null;
   let selectedFile = null;
+  let selectedObjectUrl = null;
 
   // Optical detection state
   const scratchCanvas = document.createElement('canvas');
-  const qrCanvas = document.createElement('canvas');
   let focusPoint = { x: 0.5, y: 0.45 };
   let smoothPrimaryQuad = null;
   let primaryMonitor = null;
   let secondaryMonitors = [];
   let missFrames = 0;
   let wasMonitorLocked = false;
-  let detectedQrQuad = null;
-  let detectedQrTime = 0;
 
-  // Sender P2P state
+  // Auto-Discovery P2P Sender state
   let senderPeer = null;
-  let senderConn = null;
-  let connectedCode = null;
-  let connectingCode = null;
-  let qrScanBusy = false;
-  let lastQrAttemptAt = 0;
+  const discoveredScreens = new Map(); // slotNum -> { slot, name, resolution, conn }
+  let selectedSlot = null;
+  let scanningSlots = false;
 
-  // Receiver P2P state
+  // Auto-Discovery Receiver state
   let rxPeer = null;
+  let rxSlot = 1;
   let rxConn = null;
-  let rxCode = sessionStorage.getItem('sr_stark_rx_code') || window.StarkP2P.generateCode();
-  sessionStorage.setItem('sr_stark_rx_code', rxCode);
   let rxActiveKind = null;
   let rxBlobUrl = null;
   let rxAudioCtx = null;
@@ -105,7 +104,7 @@
     toastEl.textContent = text;
     toastEl.classList.add('show');
     clearTimeout(showToast._t);
-    showToast._t = setTimeout(() => toastEl.classList.remove('show'), 2800);
+    showToast._t = setTimeout(() => toastEl.classList.remove('show'), 3000);
   }
 
   function formatTime(sec) {
@@ -115,17 +114,67 @@
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
 
+  function updateRoomLabels() {
+    const label = 'CANAL: ' + room.toUpperCase();
+    roomBtn.textContent = label;
+    rxRoomBtn.textContent = label;
+  }
+  updateRoomLabels();
+
+  function changeRoom() {
+    const input = prompt('Nombre de tu canal automático (ej. SR1, CASA, OFICINA). Usa el mismo en tu cel y tu PC/TV:', room.toUpperCase());
+    if (!input) return;
+    room = window.StarkP2P.normalizeRoom(input);
+    localStorage.setItem('sr_stark_room', room);
+    updateRoomLabels();
+
+    // Reset connections on new room
+    for (const entry of discoveredScreens.values()) {
+      try { entry.conn.close(); } catch (_) {}
+    }
+    discoveredScreens.clear();
+    selectedSlot = null;
+    renderRadarChips();
+
+    if (activeTab === 'rx') {
+      initReceiverAutoSlot(1);
+    } else {
+      scanAutoScreens(true);
+    }
+    showToast('CANAL CAMBIADO A ' + room.toUpperCase());
+  }
+  roomBtn.addEventListener('click', changeRoom);
+  rxRoomBtn.addEventListener('click', changeRoom);
+
+  function getActiveTarget() {
+    if (selectedSlot && discoveredScreens.has(selectedSlot)) {
+      const entry = discoveredScreens.get(selectedSlot);
+      if (entry.conn && entry.conn.open) return entry;
+    }
+    for (const entry of discoveredScreens.values()) {
+      if (entry.conn && entry.conn.open) {
+        selectedSlot = entry.slot;
+        return entry;
+      }
+    }
+    return null;
+  }
+
   function updateRadarPill() {
-    if (connectedCode) {
+    const target = getActiveTarget();
+    connDot.className = target ? 'status-dot online' : (primaryMonitor ? 'status-dot locked' : 'status-dot');
+
+    if (target && primaryMonitor) {
+      const pct = Math.round(primaryMonitor.confidence * 100);
       radarStatus.className = 'hud-mono connected';
       radarStatus.querySelector('.status-dot').className = 'status-dot online';
-      radarStatusText.textContent = `ENLAZADO CON PANTALLA ${connectedCode} — LISTO`;
+      radarStatusText.textContent = `MONITOR FIJADO (${pct}%) → ${target.name.toUpperCase()} LISTO`;
       return;
     }
-    if (connectingCode) {
-      radarStatus.className = 'hud-mono locked';
-      radarStatus.querySelector('.status-dot').className = 'status-dot locked';
-      radarStatusText.textContent = `CONECTANDO CON PANTALLA ${connectingCode}...`;
+    if (target) {
+      radarStatus.className = 'hud-mono connected';
+      radarStatus.querySelector('.status-dot').className = 'status-dot online';
+      radarStatusText.textContent = `AUTO-ENLAZADO: ${target.name.toUpperCase()} — LISTO`;
       return;
     }
     if (primaryMonitor) {
@@ -133,12 +182,34 @@
       const ratioLabel = primaryMonitor.aspect > 1.5 ? '16:9' : primaryMonitor.aspect > 1.15 ? '4:3' : 'VERTICAL';
       radarStatus.className = 'hud-mono locked';
       radarStatus.querySelector('.status-dot').className = 'status-dot locked';
-      radarStatusText.textContent = `MONITOR DETECTADO [${ratioLabel} · ${pct}%] — LEYENDO QR...`;
+      radarStatusText.textContent = `MONITOR DETECTADO [${ratioLabel} · ${pct}%] — USA AIRPLAY O RECEPTOR`;
       return;
     }
     radarStatus.className = 'hud-mono';
     radarStatus.querySelector('.status-dot').className = 'status-dot';
-    radarStatusText.textContent = 'APUNTA A UN MONITOR O TV...';
+    radarStatusText.textContent = scanningSlots ? 'BUSCANDO PANTALLAS EN TU CANAL...' : 'APUNTA A UN MONITOR O USA 📡 AIRPLAY / TV';
+  }
+
+  function renderRadarChips() {
+    while (radarStrip.children.length > 2) {
+      radarStrip.removeChild(radarStrip.lastChild);
+    }
+    for (const entry of discoveredScreens.values()) {
+      if (!entry.conn || !entry.conn.open) continue;
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'screen-chip' + (entry.slot === selectedSlot ? ' selected' : '');
+      chip.innerHTML = `<span class="status-dot online"></span><span>${entry.name}</span>`;
+      chip.addEventListener('click', () => {
+        selectedSlot = entry.slot;
+        if (window.StarkAudio) window.StarkAudio.playLock();
+        renderRadarChips();
+        updateRadarPill();
+        showToast('OBJETIVO: ' + entry.name.toUpperCase());
+      });
+      radarStrip.appendChild(chip);
+    }
+    updateRadarPill();
   }
 
   // ===== CAMERA =====
@@ -160,11 +231,7 @@
     }
     try {
       camStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
     } catch (_) {
@@ -193,7 +260,6 @@
     if (activeTab === 'scan') startCamera();
   });
 
-  // Tap on viewfinder to prioritize a specific monitor when multiple are visible
   hudCanvas.addEventListener('pointerdown', (e) => {
     const rect = hudCanvas.getBoundingClientRect();
     focusPoint = {
@@ -203,7 +269,99 @@
     if (window.StarkAudio) window.StarkAudio.playLock();
   });
 
-  // ===== TAB SWITCH (ESCÁNER / RECEPTOR TV) =====
+  // ===== ZERO-QR AUTO-DISCOVERY ENGINE (SCANNER SIDE) =====
+  function ensureSenderPeer() {
+    return new Promise((resolve, reject) => {
+      if (typeof window.Peer !== 'function') return reject(new Error('Sin conexión a internet'));
+      if (senderPeer && !senderPeer.destroyed && senderPeer.open) return resolve(senderPeer);
+      if (senderPeer && !senderPeer.destroyed) {
+        senderPeer.once('open', () => resolve(senderPeer));
+        senderPeer.once('error', () => {});
+        return;
+      }
+      senderPeer = new window.Peer(window.StarkP2P.PEER_CONFIG);
+      senderPeer.once('open', () => resolve(senderPeer));
+      // Silently ignore peer-unavailable during automatic slot probing
+      senderPeer.on('error', () => {});
+    });
+  }
+
+  async function scanAutoScreens(manualFeedback) {
+    if (activeTab !== 'scan') return;
+    scanningSlots = true;
+    rescanBtn.textContent = '⟳ BUSCANDO...';
+    updateRadarPill();
+
+    try {
+      const p = await ensureSenderPeer();
+      for (let slot = 1; slot <= window.StarkP2P.MAX_SLOTS; slot++) {
+        const existing = discoveredScreens.get(slot);
+        if (existing && existing.conn && existing.conn.open) continue;
+
+        const targetId = window.StarkP2P.slotPeerId(room, slot);
+        const conn = p.connect(targetId, { reliable: true, serialization: 'json' });
+
+        conn.on('open', () => {
+          const entry = {
+            slot,
+            name: `Pantalla ${slot}`,
+            resolution: '',
+            conn,
+          };
+          discoveredScreens.set(slot, entry);
+          if (!selectedSlot) selectedSlot = slot;
+          if (window.StarkAudio) window.StarkAudio.playLock();
+          renderRadarChips();
+          showToast(`PANTALLA DETECTADA AUTOMÁTICAMENTE ✓`);
+        });
+
+        conn.on('data', (msg) => {
+          if (!msg) return;
+          if (msg.type === 'hello') {
+            const entry = discoveredScreens.get(slot);
+            if (entry) {
+              entry.name = msg.name || `Pantalla ${slot}`;
+              entry.resolution = msg.resolution || '';
+              renderRadarChips();
+            }
+          } else if (msg.type === 'playback_state' && slot === selectedSlot && msg.duration > 0) {
+            seekSlider.max = String(Math.floor(msg.duration));
+            seekSlider.value = String(Math.floor(msg.currentTime || 0));
+            timeReadout.textContent = formatTime(msg.currentTime || 0);
+          }
+        });
+
+        conn.on('close', () => {
+          const entry = discoveredScreens.get(slot);
+          if (entry && entry.conn === conn) {
+            discoveredScreens.delete(slot);
+            if (selectedSlot === slot) selectedSlot = null;
+            renderRadarChips();
+          }
+        });
+      }
+    } catch (_) {}
+
+    setTimeout(() => {
+      scanningSlots = false;
+      rescanBtn.textContent = '⟳ BUSCAR PANTALLAS';
+      updateRadarPill();
+      if (manualFeedback && !getActiveTarget()) {
+        showToast('SIN RECEPTOR EN CANAL ' + room.toUpperCase() + ' — USA 📡 AIRPLAY / TV O ABRE RECEPTOR TV');
+      }
+    }, 2600);
+  }
+
+  rescanBtn.addEventListener('click', () => scanAutoScreens(true));
+
+  // Periodic background auto-discovery when no screen is paired yet
+  setInterval(() => {
+    if (activeTab === 'scan' && !getActiveTarget() && !scanningSlots) {
+      scanAutoScreens(false);
+    }
+  }, 7000);
+
+  // ===== TAB SWITCH =====
   function switchTab(next) {
     activeTab = next;
     tabScanBtn.className = 'mode-btn' + (next === 'scan' ? ' active' : '');
@@ -216,11 +374,11 @@
 
     if (isRx) {
       stopCamera();
-      initReceiverPeer();
+      initReceiverAutoSlot(1);
       connDot.className = 'status-dot online';
     } else {
-      connDot.className = connectedCode ? 'status-dot online' : 'status-dot';
       if (!camStream) startCamera();
+      scanAutoScreens(false);
       updateRadarPill();
     }
   }
@@ -236,10 +394,13 @@
 
   function setSelectedFile(file) {
     selectedFile = file;
+    if (selectedObjectUrl) URL.revokeObjectURL(selectedObjectUrl);
+    selectedObjectUrl = URL.createObjectURL(file);
+
     const mb = (file.size / (1024 * 1024)).toFixed(2);
     const kind = window.StarkP2P.getFileKind(file.name, file.type).toUpperCase();
     fileNameEl.textContent = `${file.name} (${mb} MB)`;
-    fileHintEl.textContent = `LISTO [${kind}] • DESLIZA ↑ O TOCA TRANSMITIR`;
+    fileHintEl.textContent = `LISTO [${kind}] • DESLIZA ↑ O TOCA TRANSMITIR / AIRPLAY`;
     flickZone.classList.add('ready');
     if (window.StarkAudio) window.StarkAudio.playLock();
   }
@@ -268,7 +429,7 @@
     ctx.fillStyle = '#00e5ff'; ctx.font = 'bold 28px monospace';
     ctx.fillText('STARK INDUSTRIES // MARK VI OVERRIDE', 40, 62);
     ctx.fillStyle = '#ffb300'; ctx.font = 'bold 18px monospace';
-    ctx.fillText('TRANSMITIDO DESDE SR APPS — STARK BEAM', 40, 504);
+    ctx.fillText('AUTO-BEAM SIN QR — SR APPS', 40, 504);
 
     c.toBlob((blob) => {
       if (!blob) return;
@@ -277,132 +438,59 @@
     }, 'image/jpeg', 0.92);
   });
 
-  // ===== SENDER P2P =====
-  function ensureSenderPeer() {
-    return new Promise((resolve, reject) => {
-      if (typeof window.Peer !== 'function') {
-        return reject(new Error('Sin conexión a motor P2P (verifica internet)'));
-      }
-      if (senderPeer && !senderPeer.destroyed && senderPeer.open) return resolve(senderPeer);
-      if (senderPeer && !senderPeer.destroyed) {
-        senderPeer.once('open', () => resolve(senderPeer));
-        senderPeer.once('error', reject);
-        return;
-      }
-      senderPeer = new window.Peer(window.StarkP2P.PEER_CONFIG);
-      senderPeer.once('open', () => resolve(senderPeer));
-      senderPeer.on('error', (err) => {
-        connectingCode = null;
-        connectCodeBtn.disabled = false;
-        showToast(err.type === 'peer-unavailable' ? 'CÓDIGO NO ACTIVO EN RECEPTOR TV' : 'ERROR P2P: ' + err.type);
-        connDot.className = 'status-dot';
-        updateRadarPill();
-      });
-    });
-  }
-
-  async function connectToReceiverCode(raw) {
-    const code = window.StarkP2P.normalizeCode(raw);
-    if (code.length < 4) {
-      showToast('ESCRIBE EL CÓDIGO DE 4 LETRAS DEL RECEPTOR');
+  // ===== NATIVE AIRPLAY (iOS) / REMOTE PLAYBACK (ANDROID) — ZERO APP ON TV! =====
+  function launchNativeAirPlayOrCast() {
+    if (!selectedFile || !selectedObjectUrl) {
+      showToast('ELIGE UN MP4, MOV O MP3 PARA PROYECTAR POR AIRPLAY / CAST');
       return;
     }
-    codeInput.value = code;
-    if (connectedCode === code && senderConn && senderConn.open) return;
-    if (connectingCode === code) return;
-
-    connectingCode = code;
-    connectCodeBtn.disabled = true;
-    updateRadarPill();
-
-    try {
-      const p = await ensureSenderPeer();
-      if (senderConn) { try { senderConn.close(); } catch (_) {} }
-      const targetId = window.StarkP2P.peerIdForCode(code);
-      const nextConn = p.connect(targetId, { reliable: true, serialization: 'json' });
-      senderConn = nextConn;
-
-      const timeout = setTimeout(() => {
-        if (!nextConn.open) {
-          connectingCode = null;
-          connectCodeBtn.disabled = false;
-          updateRadarPill();
-          showToast('NO RESPONDE — VERIFICA QUE LA TV ESTÉ EN "RECEPTOR TV"');
-        }
-      }, 12000);
-
-      nextConn.on('open', () => {
-        clearTimeout(timeout);
-        connectingCode = null;
-        connectCodeBtn.disabled = false;
-        connectedCode = code;
-        connDot.className = 'status-dot online';
-        if (window.StarkAudio) window.StarkAudio.playLock();
-        updateRadarPill();
-        showToast(`OBJETIVO ENLAZADO // PANTALLA ${code} ✓`);
-      });
-
-      nextConn.on('data', (msg) => {
-        if (msg && msg.type === 'playback_state' && msg.duration > 0) {
-          seekSlider.max = String(Math.floor(msg.duration));
-          seekSlider.value = String(Math.floor(msg.currentTime || 0));
-          timeReadout.textContent = formatTime(msg.currentTime || 0);
-        }
-      });
-
-      nextConn.on('close', () => {
-        clearTimeout(timeout);
-        connectingCode = null;
-        connectCodeBtn.disabled = false;
-        if (senderConn === nextConn) {
-          connectedCode = null;
-          connDot.className = 'status-dot';
-          remoteBar.classList.remove('show');
-          updateRadarPill();
-          showToast('DESCONECTADO DE LA PANTALLA');
-        }
-      });
-    } catch (err) {
-      connectingCode = null;
-      connectCodeBtn.disabled = false;
-      updateRadarPill();
-      showToast(err.message || 'ERROR AL CONECTAR');
+    const kind = window.StarkP2P.getFileKind(selectedFile.name, selectedFile.type);
+    if (kind === 'image') {
+      showToast('AIRPLAY NATIVO ES PARA VIDEO/AUDIO (MP4/MOV/MP3). PARA JPEG USA TRANSMITIR AL RECEPTOR');
+      return;
     }
-  }
 
-  connectCodeBtn.addEventListener('click', () => connectToReceiverCode(codeInput.value));
-  codeInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') connectToReceiverCode(codeInput.value);
-  });
+    nativeCastVideo.src = selectedObjectUrl;
+    nativeCastVideo.play().catch(() => {});
 
-  copyRxLinkBtn.addEventListener('click', async () => {
-    const rxUrl = location.origin + location.pathname + '#receiver';
-    if (navigator.share) {
+    // iOS Safari native AirPlay picker (Apple TV, Samsung/LG/Sony/Roku AirPlay 2 TVs, Mac!)
+    if (typeof nativeCastVideo.webkitShowPlaybackTargetPicker === 'function') {
       try {
-        await navigator.share({ title: 'STARK BEAM — Receptor TV', url: rxUrl });
+        nativeCastVideo.webkitShowPlaybackTargetPicker();
+        showToast('SELECCIONA TU TV / APPLE TV / MAC EN AIRPLAY');
         return;
       } catch (_) {}
     }
-    try {
-      await navigator.clipboard.writeText(rxUrl);
-      showToast('LINK RECEPTOR COPIADO ✓');
-    } catch (_) {
-      prompt('Abre este link en la TV o monitor:', rxUrl);
-    }
-  });
 
-  // ===== BEAM EXECUTION =====
+    // Android Chrome / W3C Remote Playback API (Chromecast / Google TV / Android TV)
+    if (nativeCastVideo.remote && typeof nativeCastVideo.remote.prompt === 'function') {
+      nativeCastVideo.remote.prompt()
+        .then(() => showToast('CONECTANDO CON TV POR CAST...'))
+        .catch(() => showToast('NO SE ENCONTRARON TVs CAST EN ESTE NAVEGADOR'));
+      return;
+    }
+
+    showToast('ESTE NAVEGADOR NO EXPONE AIRPLAY/CAST — USA RECEPTOR TV AUTOMÁTICO');
+  }
+
+  airplayBtn.addEventListener('click', launchNativeAirPlayOrCast);
+
+  // ===== EXECUTE BEAM (AUTO-DISCOVERED SCREEN OR FALLBACK TO NATIVE AIRPLAY) =====
   async function executeBeam() {
     if (!selectedFile) {
       showToast('ELIGE UN ARCHIVO O TOCA "DEMO" PRIMERO');
       return;
     }
-    if (!senderConn || !senderConn.open) {
-      if (codeInput.value.trim().length >= 4) {
-        await connectToReceiverCode(codeInput.value);
-      } else {
-        showToast('APUNTA AL QR DEL RECEPTOR TV O ESCRIBE SU CÓDIGO ARRIBA');
+
+    const target = getActiveTarget();
+    if (!target) {
+      const kind = window.StarkP2P.getFileKind(selectedFile.name, selectedFile.type);
+      // If user loaded video/audio on iPhone/Android and no web receiver is open, launch AirPlay/Cast directly!
+      if (kind !== 'image' && (typeof nativeCastVideo.webkitShowPlaybackTargetPicker === 'function' || (nativeCastVideo.remote && nativeCastVideo.remote.prompt))) {
+        launchNativeAirPlayOrCast();
+        return;
       }
+      scanAutoScreens(true);
       return;
     }
 
@@ -412,17 +500,17 @@
     progressBar.style.width = '2%';
 
     try {
-      await window.StarkP2P.sendFileP2P(senderConn, selectedFile, (pct) => {
+      await window.StarkP2P.sendFileP2P(target.conn, selectedFile, (pct) => {
         progressBar.style.width = pct + '%';
         beamBtn.textContent = `ENVIANDO ${pct}%`;
       });
       remoteBar.classList.add('show');
-      showToast(`SEÑAL INYECTADA EN PANTALLA ${connectedCode} ✓`);
+      showToast(`ENVIADO A ${target.name.toUpperCase()} ✓`);
     } catch (err) {
       showToast(err.message || 'ERROR EN TRANSMISIÓN');
     } finally {
       beamBtn.disabled = false;
-      beamBtn.textContent = '▲ TRANSMITIR A PANTALLA';
+      beamBtn.textContent = '▲ TRANSMITIR';
       setTimeout(() => progressWrap.classList.remove('show'), 600);
     }
   }
@@ -450,9 +538,11 @@
 
   // Remote Controls
   function sendControl(action, value) {
-    if (senderConn && senderConn.open) senderConn.send({ type: 'control', action, value });
+    const target = getActiveTarget();
+    if (target) target.conn.send({ type: 'control', action, value });
   }
   restoreBtn.addEventListener('click', () => {
+    nativeCastVideo.pause();
     sendControl('restore');
     remoteBar.classList.remove('show');
     if (window.StarkAudio) window.StarkAudio.playRestore();
@@ -464,20 +554,9 @@
   volSlider.addEventListener('input', () => sendControl('volume', Number(volSlider.value)));
   muteBtn.addEventListener('click', () => sendControl('mute'));
 
-  // ===== INTEGRATED RECEIVER (RECEPTOR TV) =====
-  function renderRxQr() {
-    rxCodeText.textContent = rxCode;
-    rxQrBox.innerHTML = '';
-    if (typeof window.qrcode === 'function') {
-      // Version 1, Error Correction L (21x21 chunky modules -> scannable from 2-3+ meters!)
-      const qr = window.qrcode(0, 'L');
-      qr.addData('SB:' + rxCode);
-      qr.make();
-      rxQrBox.innerHTML = qr.createImgTag(8, 0);
-    } else {
-      rxQrBox.innerHTML = `<div class="hud-mono" style="color:#031018;font-weight:800;font-size:22px">SB:${rxCode}</div>`;
-    }
-  }
+  // ===== INTEGRATED RECEIVER (AUTO-SLOT REGISTRATION, ZERO QR) =====
+  const myDeviceName = window.StarkP2P.detectDeviceName();
+  rxDeviceTitle.textContent = myDeviceName;
 
   function stopRxMedia() {
     if (rxAudioRaf) { cancelAnimationFrame(rxAudioRaf); rxAudioRaf = null; }
@@ -612,48 +691,56 @@
     if (action === 'mute') p.muted = !p.muted;
   }
 
-  function initReceiverPeer(forceNewCode) {
-    if (forceNewCode) {
-      if (rxPeer) { try { rxPeer.destroy(); } catch (_) {} rxPeer = null; }
-      rxCode = window.StarkP2P.generateCode();
-      sessionStorage.setItem('sr_stark_rx_code', rxCode);
-    }
-    renderRxQr();
-    if (rxPeer && !rxPeer.destroyed) return;
+  function initReceiverAutoSlot(slotNum) {
+    if (rxPeer) { try { rxPeer.destroy(); } catch (_) {} rxPeer = null; }
+    rxSlot = slotNum;
     if (typeof window.Peer !== 'function') {
-      rxConnStatus.innerHTML = '<span class="status-dot hijacked"></span> ERROR CARGANDO MOTOR P2P';
+      rxConnStatus.innerHTML = '<span class="status-dot hijacked"></span> ERROR DE CONEXIÓN';
       return;
     }
-    rxConnStatus.innerHTML = '<span class="status-dot"></span> CONECTANDO SEÑAL P2P...';
-    rxPeer = new window.Peer(window.StarkP2P.peerIdForCode(rxCode), window.StarkP2P.PEER_CONFIG);
+    const peerId = window.StarkP2P.slotPeerId(room, rxSlot);
+    rxConnStatus.innerHTML = `<span class="status-dot"></span> CONECTANDO EN CANAL ${room.toUpperCase()} (SLOT ${rxSlot})...`;
+    rxPeer = new window.Peer(peerId, window.StarkP2P.PEER_CONFIG);
 
     rxPeer.on('open', () => {
-      rxConnStatus.innerHTML = '<span class="status-dot online"></span> LISTO // APUNTA TU CELULAR A ESTE QR';
+      rxConnStatus.innerHTML = `<span class="status-dot online"></span> VISIBLE EN AUTOMÁTICO — CANAL ${room.toUpperCase()} (#${rxSlot})`;
     });
 
     rxPeer.on('connection', (conn) => {
       rxConn = conn;
       conn.on('open', () => {
         if (window.StarkAudio) window.StarkAudio.playLock();
-        rxConnStatus.innerHTML = '<span class="status-dot locked"></span> CELULAR STARK ENLAZADO // ESPERANDO ARCHIVO';
+        conn.send({
+          type: 'hello',
+          slot: rxSlot,
+          name: myDeviceName,
+          resolution: `${window.screen.width}x${window.screen.height}`,
+        });
+        rxConnStatus.innerHTML = '<span class="status-dot locked"></span> CELULAR STARK ENLAZADO AUTOMÁTICAMENTE ✓';
       });
       conn.on('data', (msg) => {
         if (handleRxPacket(msg)) return;
         if (msg && msg.type === 'control') handleRxControl(msg.action, msg.value);
       });
       conn.on('close', () => {
-        rxConnStatus.innerHTML = '<span class="status-dot online"></span> LISTO // APUNTA TU CELULAR A ESTE QR';
+        rxConnStatus.innerHTML = `<span class="status-dot online"></span> VISIBLE EN AUTOMÁTICO — CANAL ${room.toUpperCase()} (#${rxSlot})`;
       });
     });
 
     rxPeer.on('error', (err) => {
-      if (err.type === 'unavailable-id') {
-        initReceiverPeer(true);
+      if (err.type === 'unavailable-id' && rxSlot < window.StarkP2P.MAX_SLOTS) {
+        initReceiverAutoSlot(rxSlot + 1);
       } else {
-        rxConnStatus.innerHTML = '<span class="status-dot hijacked"></span> ERROR P2P (' + err.type + ')';
+        rxConnStatus.innerHTML = '<span class="status-dot hijacked"></span> RECONECTANDO (' + err.type + ')...';
+        setTimeout(() => initReceiverAutoSlot(1), 3500);
       }
     });
   }
+
+  window.addEventListener('beforeunload', () => {
+    if (rxPeer) { try { rxPeer.destroy(); } catch (_) {} }
+    if (senderPeer) { try { senderPeer.destroy(); } catch (_) {} }
+  });
 
   rxUnlockBtn.addEventListener('click', () => {
     if (window.StarkAudio) window.StarkAudio.playLock();
@@ -664,7 +751,6 @@
     rxUnlockBtn.classList.remove('btn-amber');
     rxUnlockBtn.classList.add('btn-primary');
   });
-  rxNewCodeBtn.addEventListener('click', () => initReceiverPeer(true));
 
   setInterval(() => {
     if (!rxConn || !rxConn.open) return;
@@ -678,7 +764,7 @@
     });
   }, 500);
 
-  // ===== REAL-TIME MONITOR DETECTION & STARK HUD RENDER LOOP =====
+  // ===== REAL-TIME OPTICAL MONITOR DETECTION & STARK HUD LOOP =====
   function resizeHud() {
     hudCanvas.width = window.innerWidth;
     hudCanvas.height = window.innerHeight;
@@ -694,15 +780,12 @@
       const curr = pts[i];
       const prev = pts[(i + 3) % 4];
       const next = pts[(i + 1) % 4];
-
       const v1x = prev.x - curr.x, v1y = prev.y - curr.y;
       const l1 = Math.hypot(v1x, v1y) || 1;
       const v2x = next.x - curr.x, v2y = next.y - curr.y;
       const l2 = Math.hypot(v2x, v2y) || 1;
-
       const a1 = Math.min(armLen, l1 * 0.35);
       const a2 = Math.min(armLen, l2 * 0.35);
-
       ctx.beginPath();
       ctx.moveTo(curr.x + (v1x / l1) * a1, curr.y + (v1y / l1) * a1);
       ctx.lineTo(curr.x, curr.y);
@@ -721,7 +804,7 @@
     const H = hudCanvas.height;
     hudCtx.clearRect(0, 0, W, H);
 
-    // 1. Run Connected-Component Optical Monitor Detection every 3 frames (~10-20 Hz)
+    // Run thin-bezel monitor detector every 3 frames
     if (frame % 3 === 0 && cameraVideo.readyState >= 2) {
       const det = window.StarkVision.detectMonitors(cameraVideo, scratchCanvas, focusPoint);
       if (det.best) {
@@ -746,39 +829,21 @@
       }
     }
 
-    // 2. Run High-Resolution ROI-Zoomed QR Beacon Scanner every 10 frames
-    if (frame % 10 === 0 && !qrScanBusy && cameraVideo.readyState >= 2 && Date.now() - lastQrAttemptAt > 1200) {
-      qrScanBusy = true;
-      const roi = primaryMonitor ? primaryMonitor.bbox : null;
-      window.StarkVision.scanQrBeacon(cameraVideo, qrCanvas, roi)
-        .then((hit) => {
-          if (hit && hit.code) {
-            detectedQrQuad = hit.quad;
-            detectedQrTime = Date.now();
-            if (hit.code !== connectedCode && hit.code !== connectingCode) {
-              lastQrAttemptAt = Date.now();
-              connectToReceiverCode(hit.code);
-            }
-          }
-        })
-        .catch(() => {})
-        .finally(() => { qrScanBusy = false; });
-    }
-
-    // 3. Draw Secondary Detected Monitors (subtle cyan outline)
+    // Draw secondary monitors
     secondaryMonitors.forEach((sec) => {
       const pts = sec.quad.map((p) => window.StarkVision.mapVideoNormToCanvas(p, cameraVideo, W, H));
       drawCornerBrackets(hudCtx, pts, 'rgba(0, 229, 255, 0.45)', 1.8, 16);
     });
 
-    // 4. Draw Primary Locked Monitor Bounding Quad (Stark Target Lock!)
+    const target = getActiveTarget();
+
+    // Draw locked primary monitor box
     if (smoothPrimaryQuad && primaryMonitor) {
       const pts = smoothPrimaryQuad.map((p) => window.StarkVision.mapVideoNormToCanvas(p, cameraVideo, W, H));
-      const lockColor = connectedCode ? '#00e676' : '#ffb300';
+      const lockColor = target ? '#00e676' : '#ffb300';
 
-      // Translucent HUD tint inside detected screen
       hudCtx.save();
-      hudCtx.fillStyle = connectedCode ? 'rgba(0, 230, 118, 0.08)' : 'rgba(255, 179, 0, 0.08)';
+      hudCtx.fillStyle = target ? 'rgba(0, 230, 118, 0.08)' : 'rgba(255, 179, 0, 0.08)';
       hudCtx.beginPath();
       hudCtx.moveTo(pts[0].x, pts[0].y);
       hudCtx.lineTo(pts[1].x, pts[1].y);
@@ -787,8 +852,7 @@
       hudCtx.closePath();
       hudCtx.fill();
 
-      // Dashed perimeter + bold corner brackets
-      hudCtx.strokeStyle = connectedCode ? 'rgba(0, 230, 118, 0.55)' : 'rgba(0, 229, 255, 0.55)';
+      hudCtx.strokeStyle = target ? 'rgba(0, 230, 118, 0.55)' : 'rgba(0, 229, 255, 0.55)';
       hudCtx.lineWidth = 1.4;
       hudCtx.setLineDash([6, 6]);
       hudCtx.stroke();
@@ -796,8 +860,7 @@
 
       drawCornerBrackets(hudCtx, pts, lockColor, 3.2, 26);
 
-      // Animated scanning laser inside the detected screen
-      if (!connectedCode) {
+      if (!target) {
         const sweep = (performance.now() * 0.0009) % 1;
         const lx1 = pts[0].x + (pts[3].x - pts[0].x) * sweep;
         const ly1 = pts[0].y + (pts[3].y - pts[0].y) * sweep;
@@ -811,16 +874,15 @@
         hudCtx.stroke();
       }
 
-      // Telemetry Tag above screen
       const pct = Math.round(primaryMonitor.confidence * 100);
-      const tag = connectedCode
-        ? `TARGET LOCKED // TV ${connectedCode}`
-        : `DISPLAY LOCKED // ${pct}%`;
+      const tag = target
+        ? `LOCKED → ${target.name.toUpperCase()}`
+        : `MONITOR DETECTED // ${pct}%`;
       hudCtx.font = '700 11px ui-monospace, monospace';
       const tw = hudCtx.measureText(tag).width + 14;
       const tx = Math.max(10, Math.min(W - tw - 10, pts[0].x));
-      const ty = Math.max(142, pts[0].y - 10);
-      hudCtx.fillStyle = 'rgba(4, 14, 24, 0.84)';
+      const ty = Math.max(146, pts[0].y - 10);
+      hudCtx.fillStyle = 'rgba(4, 14, 24, 0.86)';
       hudCtx.fillRect(tx, ty - 16, tw, 20);
       hudCtx.strokeStyle = lockColor;
       hudCtx.lineWidth = 1;
@@ -830,19 +892,13 @@
       hudCtx.restore();
     }
 
-    // 5. Highlight exact QR beacon box when read
-    if (detectedQrQuad && Date.now() - detectedQrTime < 2200) {
-      const qPts = detectedQrQuad.map((p) => window.StarkVision.mapVideoNormToCanvas(p, cameraVideo, W, H));
-      drawCornerBrackets(hudCtx, qPts, '#00e676', 3, 18);
-    }
-
-    // 6. Center Stark Reticle (at focusPoint)
+    // Center Stark Reticle
     const cx = W * focusPoint.x;
     const cy = H * focusPoint.y;
     const rot = performance.now() * 0.0008;
     hudCtx.save();
     hudCtx.translate(cx, cy);
-    hudCtx.strokeStyle = connectedCode
+    hudCtx.strokeStyle = target
       ? 'rgba(0, 230, 118, 0.78)'
       : primaryMonitor ? 'rgba(255, 179, 0, 0.72)' : 'rgba(0, 229, 255, 0.48)';
     hudCtx.lineWidth = 1.5;
@@ -857,14 +913,9 @@
     hudCtx.restore();
   }
 
-  // Initial route (#receiver or ?code=XXXX)
-  const hash = location.hash.toLowerCase();
-  const qCode = new URLSearchParams(location.search).get('code');
-  if (hash === '#receiver') {
+  // Initial route
+  if (location.hash.toLowerCase() === '#receiver') {
     switchTab('rx');
-  } else if (qCode) {
-    switchTab('scan');
-    connectToReceiverCode(qCode);
   } else {
     switchTab('scan');
   }
