@@ -4,135 +4,114 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>SR Apps</title>
-  <meta name="description" content="SR Apps — Suite de aplicaciones web móviles (PWA)." />
-  <meta name="theme-color" content="#050a0f" />
+  <meta name="description" content="SR Apps — Aplicaciones móviles profesionales." />
+  <meta name="theme-color" content="#040608" />
   <style>
     :root {
-      --bg: #050a0f;
-      --surface: #0b141e;
-      --border: rgba(0, 229, 255, 0.22);
-      --cyan: #00e5ff;
-      --amber: #ffb300;
-      --text: #eaf6ff;
-      --muted: #82a3b8;
+      --bg: #040608;
+      --surface: #0b0f14;
+      --border: rgba(255, 255, 255, 0.1);
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       min-height: 100dvh;
-      background:
-        radial-gradient(circle at 18% 12%, rgba(0, 229, 255, 0.12), transparent 44%),
-        radial-gradient(circle at 82% 88%, rgba(255, 179, 0, 0.08), transparent 44%),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
-      padding: max(24px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', sans-serif;
+      padding: max(28px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
       display: flex;
       justify-content: center;
     }
     .wrap {
       width: 100%;
-      max-width: 720px;
+      max-width: 680px;
       display: flex;
       flex-direction: column;
-      gap: 24px;
+      gap: 28px;
     }
     header {
       padding-bottom: 18px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: baseline;
       justify-content: space-between;
-      gap: 12px;
     }
-    h1 { font-size: 28px; font-weight: 800; letter-spacing: 0.08em; }
-    h1 span { color: var(--cyan); }
+    h1 { font-size: 22px; font-weight: 700; letter-spacing: 0.04em; }
     .tag {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 11px;
       color: var(--muted);
       letter-spacing: 0.12em;
     }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
-      gap: 16px;
-    }
-    .app-card {
+    .card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 20px;
+      border-radius: 18px;
+      padding: 22px;
       display: flex;
       flex-direction: column;
       gap: 16px;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 0.18s ease, transform 0.16s ease;
     }
-    .app-head { display: flex; align-items: center; gap: 14px; }
-    .app-icon {
-      width: 54px;
-      height: 54px;
+    .card:hover {
+      border-color: rgba(255, 255, 255, 0.24);
+      transform: translateY(-2px);
+    }
+    .card-top { display: flex; align-items: center; gap: 14px; }
+    .icon {
+      width: 52px;
+      height: 52px;
       border-radius: 14px;
       border: 1px solid var(--border);
-      background: #040b12;
-      flex-shrink: 0;
+      background: #040608;
     }
-    .app-title { font-size: 19px; font-weight: 700; letter-spacing: 0.06em; }
-    .app-sub {
-      font-size: 12px;
-      color: var(--amber);
+    .title { font-size: 18px; font-weight: 600; }
+    .sub {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      margin-top: 2px;
+      font-size: 11px;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      margin-top: 3px;
     }
-    .app-desc { font-size: 14px; line-height: 1.5; color: var(--muted); }
-    .btn {
-      display: block;
-      text-align: center;
-      text-decoration: none;
+    .desc { font-size: 14px; line-height: 1.5; color: var(--muted); }
+    .cta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       padding: 12px 16px;
-      border-radius: 10px;
+      border-radius: 11px;
+      background: var(--text);
+      color: #040608;
       font-size: 13px;
-      font-weight: 700;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.07em;
-      background: var(--cyan);
-      color: #031018;
-    }
-    footer {
-      margin-top: auto;
-      padding-top: 16px;
-      font-size: 12px;
-      color: var(--muted);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-weight: 600;
     }
   </style>
 </head>
 <body>
   <main class="wrap">
     <header>
-      <h1><span>SR</span> APPS</h1>
-      <span class="tag">MOBILE PWA SUITE</span>
+      <h1>SR APPS</h1>
+      <span class="tag">MOBILE SUITE</span>
     </header>
 
-    <section class="grid">
-      <article class="app-card">
-        <div class="app-head">
-          <img class="app-icon" src="./stark-beam/icon.svg" alt="STARK BEAM" />
-          <div>
-            <div class="app-title">STARK BEAM</div>
-            <div class="app-sub">ESCÁNER ÓPTICO · RECEPTOR TV</div>
-          </div>
+    <a class="card" href="./stark-beam/">
+      <div class="card-top">
+        <img class="icon" src="./stark-beam/icon.svg" alt="STARK BEAM" />
+        <div>
+          <div class="title">STARK BEAM</div>
+          <div class="sub">OPTICAL DISPLAY PROJECTION</div>
         </div>
-        <p class="app-desc">
-          Detecta monitores y pantallas con la cámara de tu celular, enlázate automáticamente
-          al código QR de la pantalla receptora y transmite <strong>JPEG, MP3, MP4 o MOV</strong>
-          en vivo estilo Iron Man 2.
-        </p>
-        <a class="btn" href="./stark-beam/">ABRIR STARK BEAM →</a>
-      </article>
-    </section>
-
-    <footer>
-      Tip: En Safari (iOS) o Chrome (Android), abre STARK BEAM y toca "Agregar a pantalla de inicio".
-    </footer>
+      </div>
+      <p class="desc">
+        Escáner óptico de pantallas con proyección inalámbrica de JPEG, MP3, MP4 y MOV hacia monitores Windows, TVs AirPlay/Cast y receptores web.
+      </p>
+      <span class="cta">Abrir STARK BEAM →</span>
+    </a>
   </main>
 </body>
 </html>
