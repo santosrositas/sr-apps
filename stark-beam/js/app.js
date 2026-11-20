@@ -67,11 +67,12 @@
 
   // ===== STATE =====
   let activeTab = 'scan'; // 'scan' | 'rx'
-  let room = window.StarkP2P.normalizeRoom(localStorage.getItem('sr_stark_room') || 'sr1');
+  let room = window.StarkTransport.normalizeRoom(localStorage.getItem('sr_stark_room') || 'sr1');
   let facingMode = 'environment';
   let camStream = null;
   let selectedFile = null;
   let selectedObjectUrl = null;
+  let airplayLoopUrl = null;
 
   // Optical Monitor Detection state
   const scratchCanvas = document.createElement('canvas');
@@ -83,22 +84,26 @@
   let missFrames = 0;
   let wasMonitorLocked = false;
 
-  // Background P2P pool (hidden until optically verified as the monitor IN CAMERA VIEW!)
-  let senderPeer = null;
-  const hiddenPeerPool = new Map(); // slot -> { slot, name, resolution, conn }
-  let scanningSlots = false;
+  // Scanner MQTT WSS state (works 100% across 5G <-> Wi-Fi)
+  const scannerId = window.StarkTransport.makeId('scn');
+  let scannerRelay = null;
+  let scannerRelayOnline = false;
+  const onlineScreens = new Map(); // screenId -> { id, name, resolution, kind, lastSeen }
+  const flashAckWaiters = new Map(); // token -> resolve()
 
-  // Camera-Verified Target (ONLY set when the physical screen in camera view matches an optical pulse!)
-  let verifiedTarget = null; // { slot, name, resolution, conn }
+  // Camera-Verified Target (ONLY locked when camera sees the physical monitor!)
+  let verifiedTarget = null; // { id, name, resolution, kind }
   let activeTransferOrPlayback = false;
   let opticalProbeBusy = false;
   let lastOpticalProbeAt = 0;
   let opticalNoMatch = false;
 
-  // Receiver state
-  let rxPeer = null;
-  let rxSlot = 1;
-  let rxConn = null;
+  // Receiver MQTT WSS state
+  const rxScreenId = sessionStorage.getItem('sr_stark_rx_id') || window.StarkTransport.makeId('web');
+  sessionStorage.setItem('sr_stark_rx_id', rxScreenId);
+  const myDeviceName = window.StarkTransport.detectDeviceName();
+  let rxRelay = null;
+  let lastScannerFrom = null;
   let rxActiveKind = null;
   let rxBlobUrl = null;
   let rxAudioCtx = null;
@@ -106,11 +111,13 @@
   let rxAudioSrc = null;
   let rxAudioRaf = null;
 
+  rxDeviceTitle.textContent = myDeviceName;
+
   function showToast(text) {
     toastEl.textContent = text;
     toastEl.classList.add('show');
     clearTimeout(showToast._t);
-    showToast._t = setTimeout(() => toastEl.classList.remove('show'), 3000);
+    showToast._t = setTimeout(() => toastEl.classList.remove('show'), 3200);
   }
 
   function formatTime(sec) {
@@ -120,6 +127,10 @@
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
 
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
   function updateRoomLabels() {
     const label = 'CANAL: ' + room.toUpperCase();
     roomBtn.textContent = label;
@@ -127,8 +138,21 @@
   }
   updateRoomLabels();
 
+  function getLiveCandidates() {
+    const now = Date.now();
+    const list = [];
+    for (const [id, scr] of onlineScreens.entries()) {
+      if (now - scr.lastSeen < 45000) {
+        list.push(scr);
+      } else {
+        onlineScreens.delete(id);
+      }
+    }
+    return list;
+  }
+
   function getVerifiedTarget() {
-    if (verifiedTarget && verifiedTarget.conn && verifiedTarget.conn.open) {
+    if (verifiedTarget && onlineScreens.has(verifiedTarget.id)) {
       return verifiedTarget;
     }
     verifiedTarget = null;
@@ -137,18 +161,20 @@
 
   function updateRadarPill() {
     const target = getVerifiedTarget();
-    connDot.className = target ? 'status-dot online' : (primaryMonitor ? 'status-dot locked' : 'status-dot');
+    connDot.className = target
+      ? 'status-dot online'
+      : primaryMonitor ? 'status-dot locked' : (scannerRelayOnline ? 'status-dot online' : 'status-dot');
 
     if (target) {
       radarStatus.className = 'hud-mono connected';
       radarStatus.querySelector('.status-dot').className = 'status-dot online';
-      radarStatusText.textContent = `✓ EN CÁMARA: ${target.name.toUpperCase()} — LISTO`;
+      radarStatusText.textContent = `✓ ENFOCADO: ${target.name.toUpperCase()} — LISTO`;
       return;
     }
     if (opticalProbeBusy && primaryMonitor) {
       radarStatus.className = 'hud-mono locked';
       radarStatus.querySelector('.status-dot').className = 'status-dot locked';
-      radarStatusText.textContent = 'MONITOR EN CÁMARA — VERIFICANDO SEÑAL ÓPTICA...';
+      radarStatusText.textContent = 'MONITOR ENFOCADO — IDENTIFICANDO PULSO...';
       return;
     }
     if (primaryMonitor) {
@@ -156,36 +182,39 @@
       const ratio = primaryMonitor.aspect > 1.5 ? '16:9' : primaryMonitor.aspect > 1.15 ? '4:3' : 'VERTICAL';
       radarStatus.className = 'hud-mono locked';
       radarStatus.querySelector('.status-dot').className = 'status-dot locked';
-      radarStatusText.textContent = opticalNoMatch
-        ? `MONITOR [${ratio} · ${pct}%] — SIN RECEPTOR ACTIVO EN ESTA PANTALLA`
-        : `MONITOR DETECTADO [${ratio} · ${pct}%]...`;
+      if (!scannerRelayOnline) {
+        radarStatusText.textContent = `MONITOR [${ratio}] — CONECTANDO RED...`;
+      } else if (opticalNoMatch) {
+        radarStatusText.textContent = `MONITOR [${ratio} · ${pct}%] — LISTO PARA 📡 AIRPLAY / TV`;
+      } else {
+        radarStatusText.textContent = `MONITOR DETECTADO [${ratio} · ${pct}%]...`;
+      }
       return;
     }
     radarStatus.className = 'hud-mono';
-    radarStatus.querySelector('.status-dot').className = 'status-dot';
-    radarStatusText.textContent = 'APUNTA LA CÁMARA A UN MONITOR O TV...';
+    radarStatus.querySelector('.status-dot').className = scannerRelayOnline ? 'status-dot online' : 'status-dot';
+    radarStatusText.textContent = scannerRelayOnline
+      ? 'ENFOCA UN MONITOR O TV CON LA CÁMARA...'
+      : 'CONECTANDO ENLACE 5G/WI-FI...';
   }
 
   function changeRoom() {
-    const input = prompt('Nombre de tu canal (ej. SR1, CASA, OFICINA). Usa el mismo en tu cel y tu pantalla:', room.toUpperCase());
+    const input = prompt('Nombre de tu canal (ej. SR1, CASA, OFICINA). Usa el mismo en tu cel y tu PC/TV:', room.toUpperCase());
     if (!input) return;
-    room = window.StarkP2P.normalizeRoom(input);
+    room = window.StarkTransport.normalizeRoom(input);
     localStorage.setItem('sr_stark_room', room);
     updateRoomLabels();
 
-    for (const entry of hiddenPeerPool.values()) {
-      try { entry.conn.close(); } catch (_) {}
-    }
-    hiddenPeerPool.clear();
+    onlineScreens.clear();
     verifiedTarget = null;
     opticalNoMatch = false;
-    updateRadarPill();
 
     if (activeTab === 'rx') {
-      initReceiverAutoSlot(1);
+      initReceiverRelay();
     } else {
-      discoverPeersSilently();
+      initScannerRelay();
     }
+    updateRadarPill();
     showToast('CANAL: ' + room.toUpperCase());
   }
   roomBtn.addEventListener('click', changeRoom);
@@ -239,7 +268,7 @@
     if (activeTab === 'scan') startCamera();
   });
 
-  // Tap on any monitor in the camera to focus and optically re-verify THAT exact monitor
+  // Tap on any monitor to focus & re-verify THAT exact monitor
   hudCanvas.addEventListener('pointerdown', (e) => {
     const rect = hudCanvas.getBoundingClientRect();
     focusPoint = {
@@ -253,90 +282,100 @@
     updateRadarPill();
   });
 
-  // ===== SILENT BACKGROUND P2P DISCOVERY (NEVER EXPOSED UNTIL OPTICALLY MATCHED IN CAMERA) =====
-  function ensureSenderPeer() {
-    return new Promise((resolve, reject) => {
-      if (typeof window.Peer !== 'function') return reject(new Error('Sin conexión a internet'));
-      if (senderPeer && !senderPeer.destroyed && senderPeer.open) return resolve(senderPeer);
-      if (senderPeer && !senderPeer.destroyed) {
-        senderPeer.once('open', () => resolve(senderPeer));
-        return;
-      }
-      senderPeer = new window.Peer(window.StarkP2P.PEER_CONFIG);
-      senderPeer.once('open', () => resolve(senderPeer));
-      senderPeer.on('error', () => {});
-    });
+  // ===== SCANNER MQTT WSS RELAY (5G <-> WI-FI PROOF) =====
+  function pingDiscover() {
+    if (!scannerRelay || !scannerRelay.isConnected()) return;
+    const t = window.StarkTransport.topics(room);
+    scannerRelay.publish(t.discover, { type: 'who', from: scannerId, ts: Date.now() });
   }
 
-  async function discoverPeersSilently() {
-    if (activeTab !== 'scan' || scanningSlots) return;
-    scanningSlots = true;
-    try {
-      const p = await ensureSenderPeer();
-      for (let slot = 1; slot <= window.StarkP2P.MAX_SLOTS; slot++) {
-        const existing = hiddenPeerPool.get(slot);
-        if (existing && existing.conn && existing.conn.open) continue;
+  function initScannerRelay() {
+    if (scannerRelay) { scannerRelay.destroy(); scannerRelay = null; }
+    scannerRelayOnline = false;
+    onlineScreens.clear();
 
-        const targetId = window.StarkP2P.slotPeerId(room, slot);
-        const conn = p.connect(targetId, { reliable: true, serialization: 'json' });
-
-        conn.on('open', () => {
-          hiddenPeerPool.set(slot, { slot, name: `Pantalla ${slot}`, resolution: '', conn });
-          // If camera is currently seeing a monitor without a verified match, probe immediately
-          if (primaryMonitor && !getVerifiedTarget()) {
+    const t = window.StarkTransport.topics(room);
+    scannerRelay = window.StarkTransport.createRelayClient({
+      clientId: scannerId,
+      onConnect: () => {
+        scannerRelayOnline = true;
+        scannerRelay.subscribe(t.presence);
+        scannerRelay.subscribe(t.ack(scannerId));
+        pingDiscover();
+        updateRadarPill();
+      },
+      onDisconnect: () => {
+        scannerRelayOnline = false;
+        updateRadarPill();
+      },
+      onMessage: (topic, msg) => {
+        if (topic === t.presence && msg && msg.id) {
+          if (msg.online === false) {
+            onlineScreens.delete(msg.id);
+            if (verifiedTarget && verifiedTarget.id === msg.id) {
+              verifiedTarget = null;
+              updateRadarPill();
+            }
+            return;
+          }
+          onlineScreens.set(msg.id, {
+            id: msg.id,
+            name: msg.name || 'Monitor',
+            resolution: msg.resolution || '',
+            kind: msg.kind || 'web',
+            lastSeen: Date.now(),
+          });
+          if (primaryMonitor && !getVerifiedTarget() && !opticalProbeBusy) {
             lastOpticalProbeAt = 0;
           }
-        });
+          return;
+        }
 
-        conn.on('data', (msg) => {
-          if (!msg) return;
-          if (msg.type === 'hello') {
-            const entry = hiddenPeerPool.get(slot);
-            if (entry) {
-              entry.name = msg.name || `Pantalla ${slot}`;
-              entry.resolution = msg.resolution || '';
-              if (verifiedTarget && verifiedTarget.slot === slot) updateRadarPill();
-            }
-          } else if (msg.type === 'playback_state' && verifiedTarget && verifiedTarget.slot === slot && msg.duration > 0) {
+        if (topic === t.ack(scannerId) && msg) {
+          if (msg.type === 'opt_flash_started' && msg.token && flashAckWaiters.has(msg.token)) {
+            const fn = flashAckWaiters.get(msg.token);
+            flashAckWaiters.delete(msg.token);
+            fn();
+          } else if (msg.type === 'playback_state' && verifiedTarget && msg.screenId === verifiedTarget.id && msg.duration > 0) {
             seekSlider.max = String(Math.floor(msg.duration));
             seekSlider.value = String(Math.floor(msg.currentTime || 0));
             timeReadout.textContent = formatTime(msg.currentTime || 0);
           }
-        });
-
-        conn.on('close', () => {
-          const entry = hiddenPeerPool.get(slot);
-          if (entry && entry.conn === conn) {
-            hiddenPeerPool.delete(slot);
-            if (verifiedTarget && verifiedTarget.slot === slot) {
-              verifiedTarget = null;
-              remoteBar.classList.remove('show');
-              updateRadarPill();
-            }
-          }
-        });
-      }
-    } catch (_) {}
-    setTimeout(() => { scanningSlots = false; }, 2200);
+        }
+      },
+    });
   }
 
   setInterval(() => {
-    if (activeTab === 'scan') discoverPeersSilently();
-  }, 6000);
+    if (activeTab === 'scan' && scannerRelayOnline) pingDiscover();
+  }, 8000);
 
-  // ===== OPTICAL PULSE VERIFICATION (CONFIRMS WHICH EXACT PHYSICAL MONITOR THE CAMERA SEES!) =====
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
+  // ===== SYNCHRONIZED BLACK->CYAN OPTICAL HANDSHAKE (LOCKS ONLY THE MONITOR IN CAMERA VIEW!) =====
+  function waitForFlashAck(token, timeoutMs) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        flashAckWaiters.delete(token);
+        resolve(false);
+      }, timeoutMs);
+      flashAckWaiters.set(token, () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
   }
 
   async function identifyVisibleMonitor() {
     if (opticalProbeBusy || !primaryMonitor || activeTab !== 'scan') return;
 
-    const openCandidates = Array.from(hiddenPeerPool.values()).filter((e) => e.conn && e.conn.open);
-    if (!openCandidates.length) {
+    pingDiscover();
+    let candidates = getLiveCandidates();
+    if (!candidates.length) {
+      await sleep(350);
+      candidates = getLiveCandidates();
+    }
+    if (!candidates.length) {
       opticalNoMatch = true;
       updateRadarPill();
-      discoverPeersSilently();
       return;
     }
 
@@ -345,56 +384,55 @@
     lastOpticalProbeAt = Date.now();
     updateRadarPill();
 
+    const t = window.StarkTransport.topics(room);
     let bestMatch = null;
-    let bestDelta = 0;
+    let bestSwing = 0;
 
     try {
-      for (const candidate of openCandidates) {
+      for (const cand of candidates) {
         if (!primaryMonitor || activeTab !== 'scan') break;
-        const bbox = primaryMonitor.bbox;
-
-        // 1. Capture baseline brightness & cyan inside the monitor the camera is looking at
-        const base = window.StarkVision.sampleBboxStats(cameraVideo, probeCanvas, bbox);
+        const base = window.StarkVision.sampleBboxStats(cameraVideo, probeCanvas, primaryMonitor.bbox);
         if (!base) continue;
 
-        // 2. Ask ONLY this candidate Receiver to emit a 280ms Stark Cyan/White optical pulse
-        const token = 'p' + Date.now().toString(36);
-        candidate.conn.send({ type: 'opt_flash', token, durationMs: 280 });
+        const token = 'f' + Math.random().toString(36).slice(2, 8);
+        const ackPromise = waitForFlashAck(token, 1200);
 
-        // 3. Sample the exact camera bbox during the pulse window (420ms)
-        let peakLum = base.lum;
-        let peakCyan = base.cyan;
-        for (let step = 0; step < 12; step++) {
-          await sleep(35);
+        // Request 2-phase BLACK (220ms) -> BRIGHT CYAN (340ms) flash on ONLY this candidate
+        scannerRelay.publish(t.cmd(cand.id), {
+          type: 'opt_flash',
+          from: scannerId,
+          token,
+          darkMs: 220,
+          brightMs: 340,
+        });
+
+        // Wait for exact millisecond receiver starts flashing (eliminates 5G jitter!)
+        await ackPromise;
+
+        let minLum = base.lum, maxLum = base.lum;
+        let minCyan = base.cyan, maxCyan = base.cyan;
+
+        for (let step = 0; step < 19; step++) {
+          await sleep(38);
           if (!primaryMonitor) break;
           const s = window.StarkVision.sampleBboxStats(cameraVideo, probeCanvas, primaryMonitor.bbox);
           if (s) {
-            if (s.lum > peakLum) peakLum = s.lum;
-            if (s.cyan > peakCyan) peakCyan = s.cyan;
+            if (s.lum < minLum) minLum = s.lum;
+            if (s.lum > maxLum) maxLum = s.lum;
+            if (s.cyan < minCyan) minCyan = s.cyan;
+            if (s.cyan > maxCyan) maxCyan = s.cyan;
           }
         }
 
-        // 4. Wait briefly for pulse to finish and confirm brightness drops back down
-        await sleep(160);
-        const post = primaryMonitor
-          ? window.StarkVision.sampleBboxStats(cameraVideo, probeCanvas, primaryMonitor.bbox)
-          : null;
+        const lumSwing = maxLum - minLum;
+        const cyanSwing = maxCyan - minCyan;
+        const swing = Math.max(lumSwing, cyanSwing);
 
-        const riseLum = peakLum - base.lum;
-        const riseCyan = peakCyan - base.cyan;
-        const fallLum = post ? (peakLum - post.lum) : riseLum;
-        const fallCyan = post ? (peakCyan - post.cyan) : riseCyan;
-
-        // Strong rise AND clear return fall inside the exact monitor bbox = unmistakable match!
-        const matched =
-          (riseLum >= 16 && fallLum >= 10) ||
-          (riseCyan >= 18 && fallCyan >= 10);
-
-        const strength = Math.max(riseLum, riseCyan);
-        if (matched && strength > bestDelta) {
-          bestDelta = strength;
-          bestMatch = candidate;
-          break; // Found the exact physical screen in view!
+        // Black -> Cyan creates a huge brightness/cyan swing ONLY inside the monitor being looked at!
+        if (swing >= 22 && swing > bestSwing) {
+          bestSwing = swing;
+          bestMatch = cand;
+          break;
         }
       }
     } finally {
@@ -405,7 +443,7 @@
       verifiedTarget = bestMatch;
       opticalNoMatch = false;
       if (window.StarkAudio) window.StarkAudio.playLock();
-      showToast(`PANTALLA IDENTIFICADA EN CÁMARA: ${bestMatch.name.toUpperCase()} ✓`);
+      showToast(`✓ MONITOR FIJADO: ${bestMatch.name.toUpperCase()}`);
     } else {
       verifiedTarget = null;
       opticalNoMatch = true;
@@ -417,11 +455,11 @@
     verifiedTarget = null;
     opticalNoMatch = false;
     lastOpticalProbeAt = 0;
-    discoverPeersSilently();
+    pingDiscover();
     if (primaryMonitor) {
       identifyVisibleMonitor();
     } else {
-      showToast('APUNTA LA CÁMARA DIRECTAMENTE A UN MONITOR O TV');
+      showToast('ENFOCA UN MONITOR O TV CON LA CÁMARA');
     }
     updateRadarPill();
   });
@@ -439,14 +477,16 @@
 
     if (isRx) {
       stopCamera();
-      initReceiverAutoSlot(1);
+      if (scannerRelay) { scannerRelay.destroy(); scannerRelay = null; }
+      initReceiverRelay();
       connDot.className = 'status-dot online';
     } else {
+      if (rxRelay) { rxRelay.destroy(); rxRelay = null; }
       verifiedTarget = null;
       opticalNoMatch = false;
       lastOpticalProbeAt = 0;
       if (!camStream) startCamera();
-      discoverPeersSilently();
+      initScannerRelay();
       updateRadarPill();
     }
   }
@@ -463,12 +503,13 @@
   function setSelectedFile(file) {
     selectedFile = file;
     if (selectedObjectUrl) URL.revokeObjectURL(selectedObjectUrl);
+    if (airplayLoopUrl) { URL.revokeObjectURL(airplayLoopUrl); airplayLoopUrl = null; }
     selectedObjectUrl = URL.createObjectURL(file);
 
     const mb = (file.size / (1024 * 1024)).toFixed(2);
-    const kind = window.StarkP2P.getFileKind(file.name, file.type).toUpperCase();
+    const kind = window.StarkTransport.getFileKind(file.name, file.type).toUpperCase();
     fileNameEl.textContent = `${file.name} (${mb} MB)`;
-    fileHintEl.textContent = `LISTO [${kind}] • APUNTA AL MONITOR Y DESLIZA ↑`;
+    fileHintEl.textContent = `LISTO [${kind}] • ENFOCA EL MONITOR Y DESLIZA ↑`;
     flickZone.classList.add('ready');
     if (window.StarkAudio) window.StarkAudio.playLock();
   }
@@ -497,48 +538,109 @@
     ctx.fillStyle = '#00e5ff'; ctx.font = 'bold 28px monospace';
     ctx.fillText('STARK INDUSTRIES // OPTICAL LOCK', 40, 62);
     ctx.fillStyle = '#ffb300'; ctx.font = 'bold 18px monospace';
-    ctx.fillText('MONITOR IDENTIFICADO POR CÁMARA — SR APPS', 40, 504);
+    ctx.fillText('SIGNAL OVERRIDE — SR APPS', 40, 504);
 
     c.toBlob((blob) => {
       if (!blob) return;
       setSelectedFile(new File([blob], 'Stark_Mark_VI_Demo.jpeg', { type: 'image/jpeg' }));
-      showToast('DEMO LISTO // APUNTA AL MONITOR Y DESLIZA ↑');
+      showToast('DEMO LISTO // ENFOCA EL MONITOR Y DESLIZA ↑');
     }, 'image/jpeg', 0.92);
   });
 
-  // ===== NATIVE AIRPLAY (iOS) / CAST (ANDROID) =====
-  function launchNativeAirPlayOrCast() {
+  // ===== JPEG -> LOOPING MP4 WRAPPER FOR NATIVE iOS AIRPLAY (ZERO APP ON TV!) =====
+  async function wrapImageAsLoopVideoUrl(fileUrl) {
+    if (airplayLoopUrl) return airplayLoopUrl;
+    if (typeof MediaRecorder !== 'function') return null;
+
+    const img = new Image();
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = rej;
+      img.src = fileUrl;
+    });
+
+    const c = document.createElement('canvas');
+    c.width = 1280;
+    c.height = 720;
+    const ctx = c.getContext('2d');
+    const scale = Math.min(c.width / img.width, c.height / img.height);
+    const dw = img.width * scale;
+    const dh = img.height * scale;
+    const dx = (c.width - dw) / 2;
+    const dy = (c.height - dh) / 2;
+
+    const stream = c.captureStream(12);
+    const mime = MediaRecorder.isTypeSupported('video/mp4')
+      ? 'video/mp4'
+      : (MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : '');
+    const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+
+    const done = new Promise((resolve) => {
+      rec.onstop = () => {
+        const blob = new Blob(chunks, { type: mime || 'video/mp4' });
+        airplayLoopUrl = URL.createObjectURL(blob);
+        resolve(airplayLoopUrl);
+      };
+    });
+
+    rec.start();
+    for (let f = 0; f < 14; f++) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, dx, dy, dw, dh);
+      await sleep(75);
+    }
+    rec.stop();
+    return done;
+  }
+
+  async function launchNativeAirPlayOrCast() {
     if (!selectedFile || !selectedObjectUrl) {
-      showToast('ELIGE UN MP4, MOV O MP3 PARA AIRPLAY / CAST');
+      showToast('ELIGE UN JPEG, MP3, MP4 O MOV PRIMERO');
       return;
     }
-    const kind = window.StarkP2P.getFileKind(selectedFile.name, selectedFile.type);
+    const kind = window.StarkTransport.getFileKind(selectedFile.name, selectedFile.type);
+    let mediaUrl = selectedObjectUrl;
+
     if (kind === 'image') {
-      showToast('AIRPLAY NATIVO ES PARA MP4/MOV/MP3 — PARA JPEG APUNTA AL RECEPTOR TV');
-      return;
+      showToast('PREPARANDO FOTO PARA AIRPLAY / TV...');
+      try {
+        const wrapped = await wrapImageAsLoopVideoUrl(selectedObjectUrl);
+        if (!wrapped) {
+          showToast('PARA FOTO EN PC USA EL AGENTE WINDOWS O RECEPTOR TV');
+          return;
+        }
+        mediaUrl = wrapped;
+      } catch (_) {
+        showToast('NO SE PUDO CONVERTIR FOTO A AIRPLAY');
+        return;
+      }
     }
 
-    nativeCastVideo.src = selectedObjectUrl;
+    nativeCastVideo.src = mediaUrl;
     nativeCastVideo.play().catch(() => {});
 
     if (typeof nativeCastVideo.webkitShowPlaybackTargetPicker === 'function') {
       try {
         nativeCastVideo.webkitShowPlaybackTargetPicker();
-        showToast('ELIGE TU TV / APPLE TV / MAC EN AIRPLAY');
+        showToast('SELECCIONA TU TV / APPLE TV / MAC EN AIRPLAY');
         return;
       } catch (_) {}
     }
     if (nativeCastVideo.remote && typeof nativeCastVideo.remote.prompt === 'function') {
       nativeCastVideo.remote.prompt()
-        .then(() => showToast('CONECTANDO POR CAST...'))
-        .catch(() => showToast('SIN TVs CAST DETECTADAS'));
+        .then(() => showToast('PROYECTANDO A TV POR CAST...'))
+        .catch(() => showToast('NO SE DETECTARON TVs CAST'));
       return;
     }
-    showToast('USA UN MONITOR CON RECEPTOR TV ABIERTO');
+    showToast('ESTE NAVEGADOR NO EXPONE AIRPLAY — USA RECEPTOR TV O AGENTE WINDOWS');
   }
+
   airplayBtn.addEventListener('click', launchNativeAirPlayOrCast);
 
-  // ===== TRANSMIT ONLY TO THE CAMERA-VERIFIED MONITOR! =====
+  // ===== TRANSMIT TO THE CAMERA-FOCUSED MONITOR =====
   async function executeBeam() {
     if (!selectedFile) {
       showToast('ELIGE UN ARCHIVO O TOCA "DEMO" PRIMERO');
@@ -546,19 +648,23 @@
     }
 
     if (!primaryMonitor && !activeTransferOrPlayback) {
-      showToast('APUNTA LA CÁMARA DIRECTAMENTE AL MONITOR QUE QUIERES CONTROLAR');
+      showToast('ENFOCA LA CÁMARA DIRECTAMENTE AL MONITOR O TV');
       return;
     }
 
     let target = getVerifiedTarget();
     if (!target) {
-      // Try one immediate optical verification right now before giving up
       await identifyVisibleMonitor();
       target = getVerifiedTarget();
     }
 
+    // If focused monitor has no STARK Receiver / Windows Agent, automatically offer native AirPlay/Cast!
     if (!target) {
-      showToast('ESTA PANTALLA NO TIENE RECEPTOR TV ACTIVO (O USA 📡 AIRPLAY / TV)');
+      if (typeof nativeCastVideo.webkitShowPlaybackTargetPicker === 'function' || (nativeCastVideo.remote && nativeCastVideo.remote.prompt)) {
+        launchNativeAirPlayOrCast();
+        return;
+      }
+      showToast('ACTIVA "RECEPTOR TV" O EL AGENTE WINDOWS EN ESA PANTALLA');
       return;
     }
 
@@ -569,7 +675,8 @@
     progressBar.style.width = '2%';
 
     try {
-      await window.StarkP2P.sendFileP2P(target.conn, selectedFile, (pct) => {
+      const t = window.StarkTransport.topics(room);
+      await window.StarkTransport.sendFileRelay(scannerRelay, t.cmd(target.id), scannerId, selectedFile, (pct) => {
         progressBar.style.width = pct + '%';
         beamBtn.textContent = `ENVIANDO ${pct}%`;
       });
@@ -609,7 +716,10 @@
   // Remote Controls
   function sendControl(action, value) {
     const target = getVerifiedTarget();
-    if (target) target.conn.send({ type: 'control', action, value });
+    if (target && scannerRelay && scannerRelay.isConnected()) {
+      const t = window.StarkTransport.topics(room);
+      scannerRelay.publish(t.cmd(target.id), { type: 'control', action, value });
+    }
   }
   restoreBtn.addEventListener('click', () => {
     nativeCastVideo.pause();
@@ -625,15 +735,15 @@
   volSlider.addEventListener('input', () => sendControl('volume', Number(volSlider.value)));
   muteBtn.addEventListener('click', () => sendControl('mute'));
 
-  // ===== INTEGRATED RECEIVER (WITH OPTICAL PULSE RESPONDER) =====
-  const myDeviceName = window.StarkP2P.detectDeviceName();
-  rxDeviceTitle.textContent = myDeviceName;
-
-  function triggerOpticalFlash(durationMs) {
-    rxOpticalPulse.style.opacity = '0.96';
-    setTimeout(() => {
-      rxOpticalPulse.style.opacity = '0';
-    }, Math.max(180, Math.min(400, durationMs || 280)));
+  // ===== INTEGRATED RECEIVER (2-PHASE BLACK -> CYAN OPTICAL PULSE + FULLSCREEN PLAYER) =====
+  async function triggerOpticalFlash(darkMs, brightMs) {
+    rxOpticalPulse.style.background = '#000000';
+    rxOpticalPulse.style.opacity = '0.98';
+    await sleep(Math.max(150, Math.min(400, darkMs || 220)));
+    rxOpticalPulse.style.background = '#00f5ff';
+    rxOpticalPulse.style.opacity = '0.98';
+    await sleep(Math.max(200, Math.min(500, brightMs || 340)));
+    rxOpticalPulse.style.opacity = '0';
   }
 
   function stopRxMedia() {
@@ -738,8 +848,9 @@
     }, 820);
   }
 
-  const handleRxPacket = window.StarkP2P.createFileAssembler({
+  const handleRxPacket = window.StarkTransport.createFileAssembler({
     onStart: (meta) => {
+      if (meta.from) lastScannerFrom = meta.from;
       rxTransfer.classList.add('show');
       rxBarFill.style.width = '2%';
       rxTransferPct.textContent = `0% // ${meta.name}`;
@@ -769,55 +880,60 @@
     if (action === 'mute') p.muted = !p.muted;
   }
 
-  function initReceiverAutoSlot(slotNum) {
-    if (rxPeer) { try { rxPeer.destroy(); } catch (_) {} rxPeer = null; }
-    rxSlot = slotNum;
-    if (typeof window.Peer !== 'function') {
-      rxConnStatus.innerHTML = '<span class="status-dot hijacked"></span> ERROR DE CONEXIÓN';
-      return;
-    }
-    const peerId = window.StarkP2P.slotPeerId(room, rxSlot);
-    rxConnStatus.innerHTML = `<span class="status-dot"></span> CONECTANDO EN CANAL ${room.toUpperCase()}...`;
-    rxPeer = new window.Peer(peerId, window.StarkP2P.PEER_CONFIG);
-
-    rxPeer.on('open', () => {
-      rxConnStatus.innerHTML = `<span class="status-dot online"></span> LISTO // APUNTA TU CÁMARA A ESTA PANTALLA`;
-    });
-
-    rxPeer.on('connection', (conn) => {
-      rxConn = conn;
-      conn.on('open', () => {
-        conn.send({
-          type: 'hello',
-          slot: rxSlot,
-          name: myDeviceName,
-          resolution: `${window.screen.width}x${window.screen.height}`,
-        });
-      });
-      conn.on('data', (msg) => {
-        if (msg && msg.type === 'opt_flash') {
-          triggerOpticalFlash(msg.durationMs);
-          return;
-        }
-        if (handleRxPacket(msg)) return;
-        if (msg && msg.type === 'control') handleRxControl(msg.action, msg.value);
-      });
-    });
-
-    rxPeer.on('error', (err) => {
-      if (err.type === 'unavailable-id' && rxSlot < window.StarkP2P.MAX_SLOTS) {
-        initReceiverAutoSlot(rxSlot + 1);
-      } else {
-        rxConnStatus.innerHTML = '<span class="status-dot hijacked"></span> RECONECTANDO...';
-        setTimeout(() => initReceiverAutoSlot(1), 3500);
-      }
+  function publishRxPresence() {
+    if (!rxRelay || !rxRelay.isConnected()) return;
+    const t = window.StarkTransport.topics(room);
+    rxRelay.publish(t.presence, {
+      id: rxScreenId,
+      name: myDeviceName,
+      resolution: `${window.screen.width}x${window.screen.height}`,
+      kind: 'web',
+      online: true,
+      ts: Date.now(),
     });
   }
 
-  window.addEventListener('beforeunload', () => {
-    if (rxPeer) { try { rxPeer.destroy(); } catch (_) {} }
-    if (senderPeer) { try { senderPeer.destroy(); } catch (_) {} }
-  });
+  function initReceiverRelay() {
+    if (rxRelay) { rxRelay.destroy(); rxRelay = null; }
+    const t = window.StarkTransport.topics(room);
+    rxConnStatus.innerHTML = `<span class="status-dot"></span> CONECTANDO CANAL ${room.toUpperCase()}...`;
+
+    rxRelay = window.StarkTransport.createRelayClient({
+      clientId: rxScreenId,
+      willTopic: t.presence,
+      willPayload: { id: rxScreenId, online: false },
+      onConnect: () => {
+        rxRelay.subscribe(t.discover);
+        rxRelay.subscribe(t.cmd(rxScreenId));
+        publishRxPresence();
+        rxConnStatus.innerHTML = `<span class="status-dot online"></span> EN LÍNEA // ENFOCA ESTA PANTALLA CON TU CELULAR`;
+      },
+      onDisconnect: () => {
+        rxConnStatus.innerHTML = `<span class="status-dot"></span> RECONECTANDO CANAL ${room.toUpperCase()}...`;
+      },
+      onMessage: (topic, msg) => {
+        if (topic === t.discover) {
+          publishRxPresence();
+          return;
+        }
+        if (!msg) return;
+        if (msg.type === 'opt_flash') {
+          if (msg.from) {
+            lastScannerFrom = msg.from;
+            rxRelay.publish(t.ack(msg.from), {
+              type: 'opt_flash_started',
+              screenId: rxScreenId,
+              token: msg.token,
+            });
+          }
+          triggerOpticalFlash(msg.darkMs, msg.brightMs);
+          return;
+        }
+        if (handleRxPacket(msg)) return;
+        if (msg.type === 'control') handleRxControl(msg.action, msg.value);
+      },
+    });
+  }
 
   rxUnlockBtn.addEventListener('click', () => {
     if (window.StarkAudio) window.StarkAudio.playLock();
@@ -830,16 +946,26 @@
   });
 
   setInterval(() => {
-    if (!rxConn || !rxConn.open) return;
-    const p = rxActiveKind === 'audio' ? rxAudio : rxActiveKind === 'video' ? rxVideo : null;
-    if (!p) return;
-    rxConn.send({
-      type: 'playback_state',
-      playing: !p.paused,
-      currentTime: p.currentTime || 0,
-      duration: isFinite(p.duration) ? p.duration : 0,
-    });
-  }, 500);
+    if (activeTab !== 'rx' || !rxRelay || !rxRelay.isConnected()) return;
+    if (lastScannerFrom) {
+      const p = rxActiveKind === 'audio' ? rxAudio : rxActiveKind === 'video' ? rxVideo : null;
+      if (p) {
+        const t = window.StarkTransport.topics(room);
+        rxRelay.publish(t.ack(lastScannerFrom), {
+          type: 'playback_state',
+          screenId: rxScreenId,
+          playing: !p.paused,
+          currentTime: p.currentTime || 0,
+          duration: isFinite(p.duration) ? p.duration : 0,
+        });
+      }
+    }
+  }, 600);
+
+  window.addEventListener('beforeunload', () => {
+    if (rxRelay) rxRelay.destroy();
+    if (scannerRelay) scannerRelay.destroy();
+  });
 
   // ===== REAL-TIME CAMERA-ONLY MONITOR LOCK & HUD LOOP =====
   function resizeHud() {
@@ -881,7 +1007,7 @@
     const H = hudCanvas.height;
     hudCtx.clearRect(0, 0, W, H);
 
-    // 1. Detect ONLY the physical monitor currently seen by the camera (every 3 frames)
+    // Detect ONLY the physical monitor currently seen by the camera
     if (frame % 3 === 0 && cameraVideo.readyState >= 2) {
       const det = window.StarkVision.detectMonitors(cameraVideo, scratchCanvas, focusPoint);
       if (det.best) {
@@ -895,12 +1021,12 @@
           if (window.StarkAudio) window.StarkAudio.playLock();
         }
 
-        // Trigger optical verification once monitor is steady in view (~3 frames) and not yet verified
         if (
           stableMonitorFrames >= 3 &&
           !getVerifiedTarget() &&
           !opticalProbeBusy &&
-          Date.now() - lastOpticalProbeAt > 3200
+          scannerRelayOnline &&
+          Date.now() - lastOpticalProbeAt > 3000
         ) {
           identifyVisibleMonitor();
         }
@@ -909,14 +1035,11 @@
         missFrames++;
         stableMonitorFrames = 0;
         if (missFrames > 14) {
-          // Camera moved away from the monitor -> release visual lock!
           primaryMonitor = null;
           smoothPrimaryQuad = null;
           wasMonitorLocked = false;
           opticalNoMatch = false;
-          if (!activeTransferOrPlayback) {
-            verifiedTarget = null;
-          }
+          if (!activeTransferOrPlayback) verifiedTarget = null;
           updateRadarPill();
         }
       }
@@ -924,7 +1047,6 @@
 
     const target = getVerifiedTarget();
 
-    // 2. Draw ONLY the single monitor currently in camera view
     if (smoothPrimaryQuad && primaryMonitor) {
       const pts = smoothPrimaryQuad.map((p) => window.StarkVision.mapVideoNormToCanvas(p, cameraVideo, W, H));
       const lockColor = target ? '#00e676' : (opticalProbeBusy ? '#00e5ff' : '#ffb300');
@@ -963,10 +1085,10 @@
 
       const pct = Math.round(primaryMonitor.confidence * 100);
       const tag = target
-        ? `✓ VERIFICADO // ${target.name.toUpperCase()}`
+        ? `✓ ${target.name.toUpperCase()}`
         : opticalProbeBusy
-          ? 'VERIFICANDO PULSO ÓPTICO...'
-          : `MONITOR EN CÁMARA // ${pct}%`;
+          ? 'IDENTIFICANDO PANTALLA...'
+          : `MONITOR ENFOCADO // ${pct}%`;
 
       hudCtx.font = '700 11px ui-monospace, monospace';
       const tw = hudCtx.measureText(tag).width + 14;
@@ -982,7 +1104,7 @@
       hudCtx.restore();
     }
 
-    // 3. Center Stark Reticle
+    // Center Stark Reticle
     const cx = W * focusPoint.x;
     const cy = H * focusPoint.y;
     const rot = performance.now() * 0.0008;
