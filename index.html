@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>SR Apps</title>
+  <meta name="description" content="SR Apps — Suite de aplicaciones web móviles (PWA)." />
+  <meta name="theme-color" content="#050a0f" />
+  <style>
+    :root {
+      --bg: #050a0f;
+      --surface: #0b141e;
+      --border: rgba(0, 229, 255, 0.22);
+      --cyan: #00e5ff;
+      --amber: #ffb300;
+      --text: #eaf6ff;
+      --muted: #82a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100dvh;
+      background:
+        radial-gradient(circle at 18% 12%, rgba(0, 229, 255, 0.12), transparent 44%),
+        radial-gradient(circle at 82% 88%, rgba(255, 179, 0, 0.08), transparent 44%),
+        var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
+      padding: max(24px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
+      display: flex;
+      justify-content: center;
+    }
+    .wrap {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    header {
+      padding-bottom: 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+    h1 span { color: var(--cyan); }
+    .tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.12em;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+      gap: 16px;
+    }
+    .app-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      transition: transform 0.16s ease, border-color 0.16s ease;
+    }
+    .app-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(0, 229, 255, 0.52);
+    }
+    .app-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .app-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #040b12;
+      flex-shrink: 0;
+    }
+    .app-title {
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+    }
+    .app-sub {
+      font-size: 12px;
+      color: var(--amber);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin-top: 2px;
+    }
+    .app-desc {
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      flex: 1;
+      min-width: 120px;
+      text-align: center;
+      text-decoration: none;
+      padding: 11px 14px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.07em;
+      transition: opacity 0.15s ease;
+    }
+    .btn-primary {
+      background: var(--cyan);
+      color: #031018;
+    }
+    .btn-secondary {
+      background: rgba(0, 229, 255, 0.09);
+      color: var(--cyan);
+      border: 1px solid var(--border);
+    }
+    .btn:active { opacity: 0.82; }
+    footer {
+      margin-top: auto;
+      padding-top: 16px;
+      font-size: 12px;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1><span>SR</span> APPS</h1>
+      <span class="tag">MOBILE PWA SUITE</span>
+    </header>
+
+    <section class="grid">
+      <article class="app-card">
+        <div class="app-head">
+          <img class="app-icon" src="./stark-beam/icon.svg" alt="STARK BEAM" />
+          <div>
+            <div class="app-title">STARK BEAM</div>
+            <div class="app-sub">IRON MAN 2 // SCREEN OVERRIDE</div>
+          </div>
+        </div>
+        <p class="app-desc">
+          Apunta con la cámara de tu celular a cualquier pantalla para proyectar
+          <strong>JPEG, MP3, MP4 o MOV</strong> en <strong>Realidad Aumentada 3D</strong>
+          o transmitir directo <strong>P2P (WebRTC)</strong> hacia una TV o monitor.
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary" href="./stark-beam/">ABRIR EN CELULAR</a>
+          <a class="btn btn-secondary" href="./stark-beam/receiver.html">PANTALLA TV</a>
+        </div>
+      </article>
+    </section>
+
+    <footer>
+      Tip: En Safari (iOS) o Chrome (Android), abre STARK BEAM y toca "Agregar a pantalla de inicio" para instalarla como app.
+    </footer>
+  </main>
+</body>
+</html>

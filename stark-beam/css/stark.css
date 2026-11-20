@@ -1,0 +1,120 @@
+:root {
+  --bg-obsidian: #050a0f;
+  --bg-panel: rgba(7, 17, 27, 0.84);
+  --cyan: #00e5ff;
+  --cyan-dim: rgba(0, 229, 255, 0.28);
+  --amber: #ffb300;
+  --amber-dim: rgba(255, 179, 0, 0.35);
+  --danger: #ff3b30;
+  --success: #00e676;
+  --text-main: #e6f7ff;
+  --text-muted: #7aa3b8;
+  --border-hud: rgba(0, 229, 255, 0.25);
+  --font-hud: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: var(--bg-obsidian);
+  color: var(--text-main);
+  font-family: var(--font-hud);
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: none;
+}
+
+.hud-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.glass-panel {
+  background: var(--bg-panel);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-hud);
+  border-radius: 14px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-hud);
+  background: rgba(0, 229, 255, 0.11);
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+}
+
+.btn:active { transform: scale(0.96); }
+
+.btn-primary {
+  background: var(--cyan);
+  color: #031018;
+  border-color: var(--cyan);
+  box-shadow: 0 0 20px rgba(0, 229, 255, 0.35);
+}
+
+.btn-amber {
+  background: rgba(255, 179, 0, 0.18);
+  border-color: var(--amber-dim);
+  color: var(--amber);
+}
+
+.btn-danger {
+  background: rgba(255, 59, 48, 0.16);
+  border-color: rgba(255, 59, 48, 0.45);
+  color: #ff6b61;
+}
+
+.btn-sm {
+  padding: 7px 10px;
+  font-size: 11px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+.status-dot.online { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.status-dot.locked { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+.status-dot.hijacked { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+
+@keyframes glitchShake {
+  0% { transform: translate(0, 0) skew(0deg); filter: hue-rotate(0deg); }
+  20% { transform: translate(-6px, 2px) skew(-2deg); filter: hue-rotate(30deg) contrast(1.4); }
+  45% { transform: translate(6px, -2px) skew(2deg); filter: hue-rotate(-30deg) brightness(1.3); }
+  70% { transform: translate(-4px, 1px) skew(-1deg); filter: contrast(1.6); }
+  100% { transform: translate(0, 0) skew(0deg); filter: none; }
+}
+
+@keyframes pulseRing {
+  0%, 100% { transform: scale(0.95); opacity: 0.92; }
+  50% { transform: scale(1.04); opacity: 0.45; }
+}
+
+.glitch-active {
+  animation: glitchShake 0.4s linear 2;
+}
